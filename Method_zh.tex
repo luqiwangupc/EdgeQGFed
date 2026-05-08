@@ -1,0 +1,254 @@
+\section{预备知识与问题定义}
+\label{sec:problem}
+
+\subsection{云-边-端协同学习系统}
+\label{subsec:system}
+
+本文考虑一个云-边-端协同学习系统，其中包含一个云服务器、一组边缘服务器
+$\mathcal{E}=\{1,\ldots,E\}$，以及一组客户端设备
+$\mathcal{C}=\{1,\ldots,C\}$。每个客户端 $i$ 关联到一个边缘服务器
+$e(i)\in\mathcal{E}$。客户端 $i$ 拥有本地数据集
+$\mathcal{D}_i=\mathcal{D}_i^l\cup\mathcal{D}_i^u$，其中
+$\mathcal{D}_i^l$ 和 $\mathcal{D}_i^u$ 分别表示有标签数据和无标签数据。在实际边缘智能任务中，数据通常由大量分布式设备持续产生，但人工标注成本较高，因此有标签样本比例通常较低。
+
+不同于传统联邦学习直接要求每个客户端执行本地模型训练，本文关注资源受限的边缘网络环境。在该环境中，客户端设备通常受限于算力、电量、无线带宽和连接稳定性，难以承担复杂模型的训练负载。因此，EdgeQGFed 将客户端视为轻量级数据参与者，将主要训练负载上移至边缘服务器，并由云端负责跨边缘节点的全局知识协调。该结构更符合真实边缘网络中客户端弱、边缘服务器相对强、云端具备全局协调能力的系统特征。
+
+设 $f_\phi(\cdot)$ 表示共享特征编码器，$h_{\theta_e}(\cdot)$ 表示边缘服务器 $e$ 维护的分类器。本文中，编码器作为特征提取器使用，边缘分类器在训练过程中更新。云端维护一个教师分类器 $h_{\theta_c}(\cdot)$，并通过云端聚合机制从边缘模型中更新全局知识。
+
+\subsection{网络约束下的学习目标}
+\label{subsec:objective}
+
+本文目标是在数据异构、标签稀缺、带宽受限和客户端参与不稳定的条件下训练高效模型。在第 $t$ 轮通信中，系统选择一组客户端
+$\mathcal{S}_t\subseteq\mathcal{C}$ 参与训练，并由对应边缘服务器执行模型更新。客户端选择过程需要满足每轮通信预算约束：
+\begin{equation}
+    \sum_{i\in\mathcal{S}_t} m_i^{\mathrm{ce}}
+    + \sum_{e\in\mathcal{E}_t} m_e^{\mathrm{ec}}
+    + \sum_{e\in\mathcal{E}_t} m_e^{\mathrm{ceg}}
+    \le B_t,
+    \label{eq:budget}
+\end{equation}
+其中，$m_i^{\mathrm{ce}}$ 表示客户端到边缘服务器的上传数据量，$m_e^{\mathrm{ec}}$ 表示边缘服务器到云端的上传数据量，$m_e^{\mathrm{ceg}}$ 表示云端向边缘服务器下发的数据量，$B_t$ 表示第 $t$ 轮的通信预算，$\mathcal{E}_t$ 表示该轮中的活跃边缘服务器集合。
+
+为了刻画云-边-端协同训练的系统开销，本文将每轮训练时延建模为：
+\begin{equation}
+    T_t = T_t^{\mathrm{c2e}}
+        + T_t^{\mathrm{edge}}
+        + T_t^{\mathrm{e2c}}
+        + T_t^{\mathrm{cloud}}
+        + T_t^{\mathrm{c2e\_down}},
+    \label{eq:latency}
+\end{equation}
+其中，$T_t^{\mathrm{c2e}}$ 表示端到边上传时延，$T_t^{\mathrm{edge}}$ 表示边缘计算时延，$T_t^{\mathrm{e2c}}$ 表示边到云上传时延，$T_t^{\mathrm{cloud}}$ 表示云端聚合时延，$T_t^{\mathrm{c2e\_down}}$ 表示云到边下发时延。该建模使本文能够从模型精度、通信开销和 time-to-target-accuracy 等角度综合评估分层协同学习系统。
+
+\section{EdgeQGFed 方法}
+\label{sec:method}
+
+EdgeQGFed 是一种面向通信受限边缘网络的云-边-端协同智能框架。它主要包含三个核心组件：边缘侧半监督训练、云端质量感知图注意力聚合，以及网络约束下的资源感知客户端采样。
+
+\subsection{边缘侧半监督训练}
+\label{subsec:edge_training}
+
+在第 $t$ 轮训练中，每个活跃边缘服务器 $e$ 接收其覆盖范围内被选中客户端上传的数据批次。对于输入样本 $x$，编码器生成特征表示
+$z=f_\phi(x)$，边缘分类器输出预测 logits $h_{\theta_e}(z)$。对于有标签样本，边缘服务器最小化监督交叉熵损失：
+\begin{equation}
+    \mathcal{L}_{\mathrm{sup}}^e =
+    \frac{1}{|\mathcal{B}_e^l|}
+    \sum_{(x,y)\in\mathcal{B}_e^l}
+    \ell_{\mathrm{ce}}\left(h_{\theta_e}(f_\phi(x)), y\right),
+    \label{eq:sup_loss}
+\end{equation}
+其中，$\mathcal{B}_e^l$ 表示边缘服务器 $e$ 当前批次中的有标签样本集合。
+
+对于无标签样本，EdgeQGFed 利用云端教师模型和边缘模型之间的一致性进行学习。给定弱增强样本 $x^w$ 和强增强样本 $x^s$，边缘模型和云端模型的预测分别为：
+\begin{equation}
+    p_e = \mathrm{softmax}\left(h_{\theta_e}(f_\phi(x^s))/T_p\right), \quad
+    p_c = \mathrm{softmax}\left(h_{\theta_c}(f_\phi(x^w))/T_p\right),
+    \label{eq:edge_cloud_pred}
+\end{equation}
+其中，$T_p$ 表示伪标签温度。云边一致性损失定义为：
+\begin{equation}
+    \mathcal{L}_{\mathrm{con}}^e =
+    d(p_e, p_c),
+    \label{eq:consistency_loss}
+\end{equation}
+其中，$d(\cdot,\cdot)$ 可以采用均方误差、$\ell_1$ 距离或 KL 散度。
+
+为了降低低质量伪标签带来的确认偏差，EdgeQGFed 同时利用边缘置信度和云端置信度对伪标签进行加权。记
+$\hat{y}_e=\arg\max p_e$，$\hat{y}_c=\arg\max p_c$，$q_e=\max p_e$，$q_c=\max p_c$。当边缘预测与云端预测一致时，该样本才参与伪标签训练，其权重定义为：
+\begin{equation}
+    w(x) =
+    \mathbf{1}[\hat{y}_e=\hat{y}_c]
+    \cdot
+    \sigma\left(\frac{q_e-\tau_e}{\gamma}\right)
+    \cdot
+    \sigma\left(\frac{q_c-\tau_c}{\gamma}\right),
+    \label{eq:pseudo_weight}
+\end{equation}
+其中，$\tau_e$ 和 $\tau_c$ 分别表示边缘置信度阈值和云端置信度阈值，$\gamma$ 表示权重平滑温度，$\sigma(\cdot)$ 表示 sigmoid 函数。加权伪标签损失为：
+\begin{equation}
+    \mathcal{L}_{\mathrm{pl}}^e =
+    \frac{\sum_{x\in\mathcal{B}_e^u} w(x)
+    \ell_{\mathrm{ce}}\left(h_{\theta_e}(f_\phi(x^s)), \hat{y}_c\right)}
+    {\sum_{x\in\mathcal{B}_e^u} w(x)+\epsilon}.
+    \label{eq:pseudo_loss}
+\end{equation}
+
+因此，边缘服务器 $e$ 的总体训练目标为：
+\begin{equation}
+    \mathcal{L}_e =
+    \mathcal{L}_{\mathrm{sup}}^e
+    + \lambda_t \mathcal{L}_{\mathrm{con}}^e
+    + \lambda_p \mathcal{L}_{\mathrm{pl}}^e,
+    \label{eq:edge_loss}
+\end{equation}
+其中，$\lambda_t$ 通过 ramp-up 策略逐渐增大，$\lambda_p$ 控制伪标签损失权重。
+
+\subsection{边缘摘要构建}
+\label{subsec:summary}
+
+边缘服务器完成本地更新后，会向云端上传一个紧凑摘要。该摘要包含模型参数、类别原型、伪标签质量、有标签比例、预测置信度和批次规模：
+\begin{equation}
+    s_e = \{\theta_e, P_e, n_e, \rho_e, r_e, c_e, b_e\}.
+    \label{eq:summary}
+\end{equation}
+其中，$P_e$ 表示类别原型矩阵，$n_e$ 表示每个类别对应的原型样本数，$\rho_e$ 表示平均伪标签权重，$r_e$ 表示有标签样本比例，$c_e$ 表示平均云端置信度，$b_e$ 表示该边缘节点处理的样本数。对于类别 $k$，其原型计算为：
+\begin{equation}
+    P_e^k =
+    \frac{1}{|\mathcal{B}_{e,k}^l|}
+    \sum_{(x,y)\in\mathcal{B}_{e,k}^l} f_\phi(x),
+    \label{eq:prototype}
+\end{equation}
+其中，$\mathcal{B}_{e,k}^l$ 表示边缘服务器 $e$ 中属于类别 $k$ 的有标签样本集合。
+
+\subsection{云端质量感知图注意力聚合}
+\label{subsec:graph_aggregation}
+
+本文将云端视为具有结构化知识建模能力的全局协调器，而不是简单的参数平均器。云端根据活跃边缘节点上传的摘要构建质量感知图，并通过图注意力机制实现跨边缘节点的选择性知识共享。云端质量感知图注意力聚合的具体流程如算法~\ref{alg:graph_aggregation} 所示。
+
+对于边缘节点 $e$，云端首先根据其模型参数计算模型签名 $u_e$。该签名由各层参数的均值、标准差和归一化范数等统计量拼接得到。同时，云端根据类别原型矩阵计算原型签名 $v_e$，即将按类别样本数加权后的原型矩阵展平并归一化。
+
+对于两个活跃边缘节点 $i$ 和 $j$，云端计算其注意力得分：
+\begin{align}
+    a_{ij} =
+    &\ \mathrm{cos}(u_i,u_j)
+    + \alpha_p \mathrm{cos}(v_i,v_j)
+    + \alpha_q (1-|\rho_i-\rho_j|) \nonumber \\
+    &+ \alpha_r (1-|r_i-r_j|)
+    + \alpha_c (1-|c_i-c_j|)
+    + \beta \mathbf{1}[i=j],
+    \label{eq:attention_score}
+\end{align}
+其中，$\alpha_p$、$\alpha_q$、$\alpha_r$ 和 $\alpha_c$ 分别控制类别原型相似性、伪标签可靠性、有标签比例相似性和预测置信度相似性的贡献，$\beta$ 表示自连接偏置，用于保留边缘节点自身的个性化知识。
+
+随后，云端通过温度缩放 softmax 得到图注意力矩阵：
+\begin{equation}
+    A_{ij} =
+    \frac{\exp(a_{ij}/\tau_g)}
+    {\sum_{k\in\mathcal{E}_t}\exp(a_{ik}/\tau_g)},
+    \label{eq:attention_matrix}
+\end{equation}
+其中，$\tau_g$ 表示图注意力温度。为避免注意力权重为零，本文对注意力矩阵设置最小权重下界，并进行行归一化。
+
+基于注意力矩阵，云端为每个边缘节点生成个性化参数：
+\begin{equation}
+    \tilde{\theta}_i =
+    \sum_{j\in\mathcal{E}_t} A_{ij}\theta_j.
+    \label{eq:personalized_param}
+\end{equation}
+相比 FedAvg 对所有边缘更新进行统一平均，该方式能够使边缘节点更多吸收来自可靠且语义相似节点的知识，同时降低低质量或分布不匹配更新的影响。
+
+云端全局参数进一步通过可靠性感知加权聚合得到：
+\begin{equation}
+    \bar{\theta} =
+    \sum_{i\in\mathcal{E}_t}
+    \omega_i \tilde{\theta}_i,
+    \quad
+    \omega_i =
+    \frac{b_i(\rho_i+1)}
+    {\sum_{j\in\mathcal{E}_t} b_j(\rho_j+1)}.
+    \label{eq:global_param}
+\end{equation}
+
+最后，云端教师模型通过指数滑动平均更新：
+\begin{equation}
+    \theta_c \leftarrow
+    \mu \theta_c + (1-\mu)\bar{\theta},
+    \label{eq:ema}
+\end{equation}
+其中，$\mu$ 表示 EMA 衰减系数。云端随后将个性化参数 $\tilde{\theta}_i$ 下发至对应边缘服务器，用于下一轮训练。
+
+\begin{algorithm}[t]
+\caption{云端质量感知图注意力聚合}
+\label{alg:graph_aggregation}
+\begin{algorithmic}[1]
+\REQUIRE 活跃边缘摘要集合 $\mathcal{S}^{\mathrm{edge}}_t=\{s_e\}_{e\in\mathcal{E}_t}$，图温度 $\tau_g$，权重系数 $\alpha_p,\alpha_q,\alpha_r,\alpha_c$，自连接偏置 $\beta$，EMA 衰减系数 $\mu$
+\ENSURE 云端教师模型 $\theta_c$，个性化边缘参数集合 $\{\tilde{\theta}_e\}_{e\in\mathcal{E}_t}$
+\FOR{each active edge $e\in\mathcal{E}_t$}
+    \STATE 根据边缘参数 $\theta_e$ 提取模型签名 $u_e$
+    \STATE 根据类别原型 $P_e$ 和原型计数 $n_e$ 提取原型签名 $v_e$
+\ENDFOR
+\FOR{each pair of active edges $(i,j)$}
+    \STATE 根据式~\eqref{eq:attention_score} 计算质量感知注意力得分 $a_{ij}$
+\ENDFOR
+\STATE 根据式~\eqref{eq:attention_matrix} 对注意力得分进行 softmax 归一化，得到图注意力矩阵 $A$
+\FOR{each target edge $i\in\mathcal{E}_t$}
+    \STATE 根据式~\eqref{eq:personalized_param} 计算个性化参数 $\tilde{\theta}_i=\sum_{j\in\mathcal{E}_t}A_{ij}\theta_j$
+\ENDFOR
+\STATE 根据式~\eqref{eq:global_param} 计算可靠性感知全局参数 $\bar{\theta}$
+\STATE 根据式~\eqref{eq:ema} 更新云端教师模型 $\theta_c\leftarrow\mu\theta_c+(1-\mu)\bar{\theta}$
+\STATE 将个性化参数 $\{\tilde{\theta}_e\}_{e\in\mathcal{E}_t}$ 下发至对应边缘服务器
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{资源感知客户端采样}
+\label{subsec:sampling}
+
+为了提升通信效率，EdgeQGFed 在客户端选择阶段同时考虑数据价值和网络状态。对于客户端 $i$，定义资源感知效用分数：
+\begin{equation}
+    U_i =
+    \frac{
+    \eta_l l_i + \eta_d d_i + \eta_b b_i^{\mathrm{up}} + \eta_a a_i
+    }
+    {(T_i^{\mathrm{up}})^{\eta_t}},
+    \label{eq:client_utility}
+\end{equation}
+其中，$l_i$ 表示客户端有标签比例，$d_i$ 表示归一化数据规模，$b_i^{\mathrm{up}}$ 表示归一化上行带宽，$a_i=1-p_i^{\mathrm{drop}}$ 表示可用性分数，$T_i^{\mathrm{up}}$ 表示估计上传时延。$\eta_l$、$\eta_d$、$\eta_b$、$\eta_a$ 和 $\eta_t$ 分别控制数据质量、数据规模、链路带宽、可用性和时延代价的重要性。
+
+在每轮训练中，EdgeQGFed 优先选择效用较高的客户端，同时满足每个边缘服务器的最大并行上传数和式~\eqref{eq:budget} 中的通信预算约束。该策略能够避免将有限通信资源消耗在数据价值低、链路质量差或掉线概率高的客户端上，从而提高单位通信开销下的训练收益。
+
+\subsection{整体训练流程}
+\label{subsec:procedure}
+
+EdgeQGFed 的整体训练流程如算法~\ref{alg:edgeqgfed} 所示。首先，系统在通信预算和链路约束下执行资源感知客户端采样。被选中的活跃客户端将数据或特征上传至其关联边缘服务器。随后，边缘服务器基于监督损失、云边一致性损失和置信度加权伪标签损失更新本地分类器。接着，活跃边缘服务器向云端上传边缘摘要。云端根据摘要构建质量感知图，计算图注意力权重，生成边缘个性化参数，并通过 EMA 更新云端教师模型。最后，云端将个性化参数下发至对应边缘服务器，进入下一轮训练。
+
+\begin{algorithm}[t]
+\caption{EdgeQGFed 云-边-端协同训练流程}
+\label{alg:edgeqgfed}
+\begin{algorithmic}[1]
+\REQUIRE 客户端集合 $\mathcal{C}$，边缘服务器集合 $\mathcal{E}$，云端教师模型 $\theta_c$，边缘模型集合 $\{\theta_e\}_{e\in\mathcal{E}}$，通信预算 $B_t$，总训练轮数 $T$
+\ENSURE 云端教师模型 $\theta_c$，个性化边缘模型集合 $\{\theta_e\}_{e\in\mathcal{E}}$
+\FOR{$t=1$ to $T$}
+    \STATE 云端根据通信预算、链路带宽、掉线概率和数据质量执行资源感知客户端采样，得到 $\mathcal{S}_t$
+    \FOR{each edge server $e\in\mathcal{E}$ in parallel}
+        \STATE 获取与边缘 $e$ 关联的活跃客户端集合 $\mathcal{S}_{t,e}$
+        \IF{$\mathcal{S}_{t,e}=\emptyset$}
+            \STATE 跳过边缘服务器 $e$
+        \ENDIF
+        \STATE 客户端上传当前批次数据或特征至边缘服务器 $e$
+        \STATE 边缘服务器利用式~\eqref{eq:sup_loss} 计算有标签监督损失 $\mathcal{L}_{\mathrm{sup}}^e$
+        \STATE 边缘服务器利用式~\eqref{eq:consistency_loss} 计算云边一致性损失 $\mathcal{L}_{\mathrm{con}}^e$
+        \STATE 根据式~\eqref{eq:pseudo_weight} 计算伪标签权重，并利用式~\eqref{eq:pseudo_loss} 计算伪标签损失 $\mathcal{L}_{\mathrm{pl}}^e$
+        \STATE 通过式~\eqref{eq:edge_loss} 更新边缘模型参数 $\theta_e$
+        \IF{当前轮满足云端聚合间隔}
+            \STATE 构建边缘摘要 $s_e=\{\theta_e,P_e,n_e,\rho_e,r_e,c_e,b_e\}$ 并上传至云端
+        \ENDIF
+    \ENDFOR
+    \IF{收到边缘摘要集合 $\mathcal{S}^{\mathrm{edge}}_t$}
+        \STATE 云端调用算法~\ref{alg:graph_aggregation} 执行质量感知图注意力聚合
+        \STATE 云端更新教师模型 $\theta_c$，并向边缘服务器下发个性化参数 $\{\tilde{\theta}_e\}$
+    \ENDIF
+\ENDFOR
+\end{algorithmic}
+\end{algorithm}
+
+通过结合分层训练负载分配、云端图注意力协同和网络感知客户端采样，EdgeQGFed 旨在解决边缘智能任务中的核心问题：在带宽受限、链路异构、标签稀缺和客户端参与不稳定条件下，实现更高效、更稳健的协同学习。

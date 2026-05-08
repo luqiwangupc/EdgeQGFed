@@ -1,0 +1,127 @@
+train:
+  learning_rate: 1e-3
+  total_steps: 1000
+  log_step: 20
+  evaluate_step: 100
+  ema_update_step: 1
+  ckpt_save_path: "checkpoints"
+  ckpt_save_name: "sanity_svhn_cnn.pth"
+  class_fn: "CE"
+  consis_fn: "MSE"
+  optimizer: "AdamW"
+  differential:
+    use: False
+    epsilon: 10
+  ramp_up_steps: 1000
+  initial_weight: 0.0
+  final_weight: 0.0
+  warm_mode: "gaussian"
+  device: 4
+  pseudo:
+    use: False
+    weight: 0.0
+    edge_threshold: 0.6
+    cloud_threshold: 0.7
+    temperature: 1
+    weight_temperature: 0.1
+    min_weight: 0.05
+
+topology:
+  num_edges: 4
+  num_clients: 128
+  clients_per_round: 32
+  edges_per_round: 4
+  client_sample_mode: "balanced"
+  assignment: "round_robin"
+  client_drop_rate: 0.0
+
+datasets:
+  name: "svhn"
+  normalize: "half"
+  batch_size: 64
+  labeled_ratio: 1.0
+  edge_num_workers: 4
+  edge_prefetch_factor: 2
+  eval_num_workers: 2
+  pin_memory: True
+  distributed: "IID"
+  partition_mode: "client_dirichlet"
+  partition_alpha: 0.3
+  min_client_size: 16
+  edge_dirichlet_alpha: 0.3
+  client_dirichlet_alpha: 1.0
+  edge_overlap_size: 5
+  edge_overlap_shift: 1
+
+models:
+  encoder_name: "identity"
+  classifier_name: "small-cnn"
+  ema_decay: 0.0
+  ema_dynamic_decay: False
+  pretrain_ckpt: null
+  algorithm: "FedAvg"
+  attack_rate: 0.0
+  graph:
+    use: False
+    temperature: 0.5
+    prototype_weight: 0.35
+    reliability_weight: 0.35
+    label_ratio_weight: 0.2
+    confidence_weight: 0.1
+    self_bias: 0.3
+    min_attention: 1.0e-4
+
+network:
+  round_comm_budget_mb: 1200
+  client_uplink_bandwidth_mbps: 80
+  edge_uplink_bandwidth_mbps: 400
+  cloud_downlink_bandwidth_mbps: 800
+  budget:
+    include_model_sync: True
+  bandwidth:
+    mode: "edge_profile"
+    client_uplink_by_edge_mbps: [40, 60, 80, 120]
+    edge_uplink_by_edge_mbps: [200, 300, 400, 600]
+    cloud_downlink_by_edge_mbps: [400, 600, 800, 1000]
+    client_distribution:
+      type: "uniform"
+      min_mbps: 10
+      max_mbps: 120
+    edge_distribution:
+      type: "lognormal"
+      median_mbps: 400
+      sigma: 0.35
+      min_mbps: 100
+      max_mbps: 1000
+    cloud_downlink_distribution:
+      type: "uniform"
+      min_mbps: 300
+      max_mbps: 1200
+  mobility:
+    mode: "static"
+    edge_drop_rates: [0.02, 0.05, 0.10, 0.15]
+    handoff_probability: 0.05
+    handoff_drop_boost: 0.20
+    drop_jitter: 0.03
+  latency:
+    edge_compute_s: 0.0
+    cloud_aggregation_s: 0.0
+  resource_sampling:
+    exploration_rate: 0.05
+    label_ratio_weight: 0.35
+    data_size_weight: 0.25
+    bandwidth_weight: 0.25
+    availability_weight: 0.15
+    latency_cost_weight: 1.0
+  max_parallel_uploads_per_edge: 8
+  client_view_count: 3
+  client_input_channels: 3
+  client_image_size: 32
+  bytes_per_value: 4
+  target_accuracy: 90.0
+
+pretrain:
+  epochs: 20
+  img_size: 32
+  decoder_dim: 1024
+  mask_ratio: 0.75
