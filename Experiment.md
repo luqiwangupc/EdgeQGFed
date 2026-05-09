@@ -1,5 +1,292 @@
 # Experiment Plan
 
+## SVHN 参数配置记录
+
+本项目中 SVHN 实验分为两类：一类是全监督 sanity check / 对照组，用于确认数据读取、模型结构、云边同步和 FedAvg 聚合是否正常；另一类是少标签半监督实验，用于验证 EdgeQGFed 的主要方法效果。两类实验不应混在同一组结论中比较。全监督实验只作为代码正确性和上限参考，论文主实验应以 `labeled_ratio = 0.1` 的半监督设置为主。
+
+### A. SVHN 全监督对照组配置
+
+用途：验证 `identity + small-cnn` 在 SVHN 上是否能正常训练，并检查云端模型和边缘模型的精度是否同步。该组不作为 EdgeQGFed 主方法结果，只用于 sanity check。
+
+```yaml
+datasets:
+  name: "svhn"
+  normalize: "half"
+  batch_size: 64
+  labeled_ratio: 1.0
+  distributed: "IID"
+  partition_mode: "client_dirichlet"
+  partition_alpha: 0.3
+  min_client_size: 16
+  edge_num_workers: 4
+  eval_num_workers: 2
+  pin_memory: True
+
+models:
+  encoder_name: "identity"
+  classifier_name: "small-cnn"
+  ema_decay: 0.0
+  ema_dynamic_decay: False
+  algorithm: "FedAvg"
+  attack_rate: 0.0
+  graph:
+    use: False
+
+train:
+  learning_rate: 1.0e-3
+  total_steps: 1000
+  log_step: 20
+  evaluate_step: 100
+  ema_update_step: 1
+  class_fn: "CE"
+  consis_fn: "MSE"
+  optimizer: "AdamW"
+  initial_weight: 0.0
+  final_weight: 0.0
+  ramp_up_steps: 1000
+  pseudo:
+    use: False
+    weight: 0.0
+
+topology:
+  num_edges: 4
+  num_clients: 128
+  clients_per_round: 32
+  edges_per_round: 4
+  client_sample_mode: "balanced"
+  assignment: "round_robin"
+  client_drop_rate: 0.0
+
+network:
+  round_comm_budget_mb: 1200
+  client_image_size: 32
+  client_input_channels: 3
+  client_view_count: 3
+  bytes_per_value: 4
+  bandwidth:
+    mode: "edge_profile"
+    client_uplink_by_edge_mbps: [40, 60, 80, 120]
+    edge_uplink_by_edge_mbps: [200, 300, 400, 600]
+    cloud_downlink_by_edge_mbps: [400, 600, 800, 1000]
+  mobility:
+    mode: "static"
+  max_parallel_uploads_per_edge: 8
+  target_accuracy: 90.0
+```
+
+记录指标：
+
+```text
+cloud_accuracy
+edge_avg_accuracy
+cloud_loss
+edge_avg_loss
+edge_total_loss
+edge_class_loss
+total_comm_mb
+formal_round_latency_s
+cumulative_estimated_latency_s
+round_wall_clock_s
+```
+
+判断标准：
+
+```text
+1. edge_total_loss 和 edge_class_loss 应明显下降。
+2. edge_avg_accuracy 应显著高于随机水平。
+3. cloud_accuracy 应与 edge_avg_accuracy 接近；如果 cloud 仍接近 10%，优先检查云边 state_dict 同步和 BatchNorm buffer。
+4. avg_pseudo_ratio、avg_pseudo_weight、avg_agreement_ratio 可以为 0，因为该组没有无标签样本且 pseudo.use=False。
+```
+
+建议表格：
+
+```text
+行: Full-supervised FedAvg sanity
+列: Dataset, Labeled Ratio, Partition, Graph, Pseudo, Cloud Accuracy, Edge Avg Accuracy, Cloud Loss, Edge Avg Loss
+```
+
+建议绘图：
+
+```text
+图 1:
+横轴: Communication Round
+纵轴: Accuracy
+曲线: cloud_accuracy, edge_avg_accuracy
+
+图 2:
+横轴: Communication Round
+纵轴: Loss
+曲线: cloud_loss, edge_avg_loss, edge_class_loss
+```
+
+### B. SVHN 半监督主实验配置
+
+用途：作为论文主实验的默认配置，验证少标签、non-IID、通信受限和云端图注意力聚合条件下的 EdgeQGFed 效果。
+
+```yaml
+datasets:
+  name: "svhn"
+  normalize: "half"
+  batch_size: 64
+  labeled_ratio: 0.1
+  distributed: "nonIID"
+  partition_mode: "client_dirichlet"
+  partition_alpha: 0.3
+  min_client_size: 16
+  edge_num_workers: 4
+  eval_num_workers: 2
+  pin_memory: True
+
+models:
+  encoder_name: "identity"
+  classifier_name: "small-cnn"
+  ema_decay: 0.0
+  ema_dynamic_decay: False
+  algorithm: "FedAvg"
+  attack_rate: 0.0
+  graph:
+    use: True
+    temperature: 0.5
+    prototype_weight: 0.35
+    reliability_weight: 0.35
+    label_ratio_weight: 0.2
+    confidence_weight: 0.1
+    self_bias: 0.3
+    min_attention: 1.0e-4
+
+train:
+  learning_rate: 1.0e-3
+  total_steps: 2000
+  log_step: 20
+  evaluate_step: 100
+  ema_update_step: 1
+  class_fn: "CE"
+  consis_fn: "MSE"
+  optimizer: "AdamW"
+  initial_weight: 0.0
+  final_weight: 1.0
+  ramp_up_steps: 300
+  warm_mode: "gaussian"
+  pseudo:
+    use: True
+    weight: 0.5
+    edge_threshold: 0.55
+    cloud_threshold: 0.60
+    temperature: 1.0
+    weight_temperature: 0.1
+    min_weight: 0.05
+
+topology:
+  num_edges: 4
+  num_clients: 128
+  clients_per_round: 32
+  edges_per_round: 4
+  client_sample_mode: "resource_aware"
+  assignment: "round_robin"
+  client_drop_rate: 0.0
+
+network:
+  round_comm_budget_mb: 1200
+  client_image_size: 32
+  client_input_channels: 3
+  client_view_count: 3
+  bytes_per_value: 4
+  bandwidth:
+    mode: "edge_profile"
+    client_uplink_by_edge_mbps: [40, 60, 80, 120]
+    edge_uplink_by_edge_mbps: [200, 300, 400, 600]
+    cloud_downlink_by_edge_mbps: [400, 600, 800, 1000]
+  mobility:
+    mode: "static"
+  resource_sampling:
+    exploration_rate: 0.05
+    label_ratio_weight: 0.35
+    data_size_weight: 0.25
+    bandwidth_weight: 0.25
+    availability_weight: 0.15
+    latency_cost_weight: 1.0
+  max_parallel_uploads_per_edge: 8
+  target_accuracy: 75.0
+```
+
+半监督实验的 non-IID 强度至少包含两组：
+
+```text
+partition_alpha = 0.3: medium non-IID
+partition_alpha = 0.1: strong non-IID
+```
+
+半监督对照顺序：
+
+```text
+1. labeled_ratio=0.1, pseudo=False, graph=False: 少标签监督下限
+2. labeled_ratio=0.1, pseudo=True, graph=False: 半监督伪标签贡献
+3. labeled_ratio=0.1, pseudo=True, graph=True: Full EdgeQGFed
+4. labeled_ratio=0.1, pseudo=True, graph=True, client_sample_mode=balanced: 资源感知采样消融
+```
+
+记录指标：
+
+```text
+cloud_accuracy
+edge_avg_accuracy
+cloud_loss
+edge_avg_loss
+edge_total_loss
+edge_class_loss
+edge_consistency_loss
+edge_pseudo_loss
+avg_pseudo_ratio
+avg_pseudo_weight
+avg_agreement_ratio
+avg_cloud_confidence
+avg_edge_confidence
+graph_attention_mean
+graph_attention_diag
+graph_reliability_mean
+graph_label_ratio_mean
+graph_confidence_mean
+total_comm_mb
+formal_round_latency_s
+cumulative_estimated_latency_s
+time_to_target_accuracy_s
+samples_per_estimated_second
+client_drop_ratio
+```
+
+建议表格：
+
+```text
+行: FedAvg, w/o Pseudo, w/o Graph, w/o Resource Sampling, Full EdgeQGFed
+列: Method, Alpha, Labeled Ratio, Cloud Accuracy, Edge Avg Accuracy, Time-to-75%, Total Comm MB, Formal Round Latency, Avg Pseudo Weight, Graph Attention Diag
+```
+
+建议绘图：
+
+```text
+图 1:
+横轴: Communication Round
+纵轴: Cloud Accuracy
+曲线: FedAvg, w/o Pseudo, w/o Graph, Full EdgeQGFed
+
+图 2:
+横轴: Cumulative Estimated Latency
+纵轴: Cloud Accuracy
+曲线: FedAvg, w/o Pseudo, w/o Graph, Full EdgeQGFed
+
+图 3:
+横轴: Communication Round
+纵轴: Loss
+曲线: cloud_loss, edge_avg_loss, edge_consistency_loss, edge_pseudo_loss
+
+图 4:
+横轴: Communication Round
+纵轴: Pseudo-label Quality
+曲线: avg_pseudo_ratio, avg_pseudo_weight, avg_agreement_ratio
+```
+
+注意：当前实现中边缘节点上传到云端的是模型状态与质量感知摘要的组合，包括 `parameters/state_dict`、类别原型、类别原型计数、伪标签质量、标签比例和置信度。因此论文表述应写成“边缘节点上传质量感知模型摘要”，不要写成“边缘节点完全不上传模型参数”。
+
 本文实验按论文呈现顺序组织，目标是证明 EdgeQGFed 在 non-IID、少标签、通信受限、带宽异构和客户端掉线条件下的有效性，重点突出通信效率、鲁棒性和 time-to-accuracy。
 
 ## 0. 统一实验设置

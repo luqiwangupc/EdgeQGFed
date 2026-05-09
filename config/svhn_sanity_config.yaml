@@ -5,23 +5,23 @@ train:
   evaluate_step: 100
   ema_update_step: 1
   ckpt_save_path: "checkpoints"
-  ckpt_save_name: "sanity_svhn_cnn.pth"
+  ckpt_save_name: "sanity_svhn_cnn_avg_semi.pth"
   class_fn: "CE"
   consis_fn: "MSE"
   optimizer: "AdamW"
   differential:
     use: False
     epsilon: 10
-  ramp_up_steps: 1000
+  warm_up_steps: 300
   initial_weight: 0.0
-  final_weight: 0.0
+  final_weight: 1.0
   warm_mode: "gaussian"
-  device: 5
+  device: 0
   pseudo:
-    use: False
-    weight: 0.0
-    edge_threshold: 0.6
-    cloud_threshold: 0.7
+    use: True
+    weight: 0.5
+    edge_threshold: 0.55
+    cloud_threshold: 0.6
     temperature: 1
     weight_temperature: 0.1
     min_weight: 0.05
@@ -39,7 +39,7 @@ datasets:
   name: "svhn"
   normalize: "half"
   batch_size: 64
-  labeled_ratio: 1.0
+  labeled_ratio: 0.1
   edge_num_workers: 4
   edge_prefetch_factor: 2
   eval_num_workers: 2
@@ -62,7 +62,7 @@ models:
   algorithm: "FedAvg"
   attack_rate: 0.0
   graph:
-    use: False
+    use: True
     temperature: 0.5
     prototype_weight: 0.35
     reliability_weight: 0.35

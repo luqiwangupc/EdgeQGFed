@@ -17,7 +17,7 @@ from models.graph_aggregator import HierarchicalGraphAggregator
 from tree.tree import create_tree
 from utils.evaluate import evaluate
 from utils.losses import get_loss_function
-from utils.warmup import get_ramp_up_value
+from utils.warmup import get_warm_up_value
 import swanlab
 
 
@@ -482,9 +482,9 @@ def train(config):
     final_train_metrics = {}
     while current_steps < config.train.total_steps:
         round_start_wall = time.perf_counter()
-        consistency_weight = get_ramp_up_value(
+        consistency_weight = get_warm_up_value(
             current_epoch=current_steps,
-            ramp_up_epochs=config.train.ramp_up_steps,
+            warm_up_epochs=config.train.warm_up_steps,
             initial_weight=config.train.initial_weight,
             final_weight=config.train.final_weight,
             mode=config.train.warm_mode,
@@ -672,7 +672,7 @@ if __name__ == '__main__':
     wandb.init(
         project='EdgeQGFed',
         dir='logs',
-        name=f"EdgeQGFed-new-{config.datasets.name}-{datetime.datetime.now().strftime('%Y%m%d-%H%M')}",
+        name=f"EdgeQGFed-avg-semi-{config.datasets.name}-{datetime.datetime.now().strftime('%Y%m%d-%H%M')}",
         config=OmegaConf.to_container(config),
         job_type='train',
     )

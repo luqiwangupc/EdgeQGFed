@@ -12,7 +12,7 @@
   differential:
     use: False
     epsilon: 10
-  ramp_up_steps: 2000
+  warm_up_steps: 2000
   initial_weight: 0.0
   final_weight: 0.5
   warm_mode: "gaussian"
