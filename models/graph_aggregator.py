@@ -111,6 +111,9 @@ class HierarchicalGraphAggregator:
         for target_index, summary in enumerate(edge_summaries):
             aggregated_parameters = []
             for param_index in range(len(summary["parameters"])):
+                if not (summary["parameters"][param_index].is_floating_point() or summary["parameters"][param_index].is_complex()):
+                    aggregated_parameters.append(summary["parameters"][param_index].clone())
+                    continue
                 mixed_param = torch.zeros_like(summary["parameters"][param_index])
                 for source_index, source_summary in enumerate(edge_summaries):
                     mixed_param = mixed_param + attention_matrix[target_index, source_index] * source_summary["parameters"][param_index]
@@ -121,6 +124,9 @@ class HierarchicalGraphAggregator:
         global_weights = (batch_weight / batch_weight.sum()) * (reliability + 1.0)
         global_weights = global_weights / global_weights.sum()
         for param_index in range(len(edge_summaries[0]["parameters"])):
+            if not (edge_summaries[0]["parameters"][param_index].is_floating_point() or edge_summaries[0]["parameters"][param_index].is_complex()):
+                global_parameters.append(edge_summaries[0]["parameters"][param_index].clone())
+                continue
             global_param = torch.zeros_like(edge_summaries[0]["parameters"][param_index])
             for edge_index, summary in enumerate(edge_summaries):
                 global_param = global_param + global_weights[edge_index] * personalized_parameters[summary["name"]][param_index]

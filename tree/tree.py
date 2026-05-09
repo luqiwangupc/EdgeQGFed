@@ -56,15 +56,15 @@ class TreeNode:
         assert self.level == 1, 'Only edge nodes upload parameters'
         if self.model is None:
             raise ValueError('Model is None')
-        return [param.data.clone() for param in self.model.parameters()]
+        return [tensor.detach().clone() for tensor in self.model.state_dict().values()]
 
     def set_parameters(self, parameters):
         assert self.level == 1, 'Only edge nodes receive personalized parameters'
         if self.model is None:
             raise ValueError('Model is None')
         with torch.no_grad():
-            for param, new_param in zip(self.model.parameters(), parameters):
-                param.data.copy_(new_param.to(param.device))
+            for tensor, new_tensor in zip(self.model.state_dict().values(), parameters):
+                tensor.copy_(new_tensor.to(device=tensor.device, dtype=tensor.dtype))
 
 
 class Tree:
@@ -265,7 +265,7 @@ class Tree:
     def _estimate_edge_sync_mb(self):
         for edge in self.root.children:
             if edge.model is not None:
-                total_bytes = sum(param.numel() * param.element_size() for param in edge.model.parameters())
+                total_bytes = sum(tensor.numel() * tensor.element_size() for tensor in edge.model.state_dict().values())
                 return total_bytes / (1024 ** 2)
         return 0.0
 

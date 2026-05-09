@@ -82,12 +82,15 @@ def average_edge_parameters(edge_summaries):
     avg_parameters = []
     for param_index in range(len(edge_summaries[0]['parameters'])):
         params = [summary['parameters'][param_index] for summary in edge_summaries]
-        avg_parameters.append(torch.stack(params).mean(dim=0))
+        if params[0].is_floating_point() or params[0].is_complex():
+            avg_parameters.append(torch.stack(params).mean(dim=0))
+        else:
+            avg_parameters.append(params[0].clone())
     return avg_parameters
 
 
 def sync_edge_models_from_cloud(tree):
-    cloud_parameters = [param.data.clone() for param in tree.root.model.model.parameters()]
+    cloud_parameters = [tensor.detach().clone() for tensor in tree.root.model.model.state_dict().values()]
     for edge in tree.root.children:
         edge.set_parameters(cloud_parameters)
 

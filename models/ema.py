@@ -22,8 +22,12 @@ class EMA(torch.nn.Module):
 
     def update_by_model(self, model):
         with torch.no_grad():
-            for ema_param, param in zip(self.model.parameters(), model.parameters()):
-                ema_param.data = self.decay * ema_param.data + (1 - self.decay) * param.data
+            for ema_tensor, tensor in zip(self.model.state_dict().values(), model.state_dict().values()):
+                tensor = tensor.to(device=ema_tensor.device, dtype=ema_tensor.dtype)
+                if ema_tensor.is_floating_point() or ema_tensor.is_complex():
+                    ema_tensor.copy_(self.decay * ema_tensor + (1 - self.decay) * tensor)
+                else:
+                    ema_tensor.copy_(tensor)
         self.update_decay()
 
     def update_by_parameters(self, parameters):
@@ -36,14 +40,18 @@ class EMA(torch.nn.Module):
 
     def AEMA(self, parameters):
         with torch.no_grad():
-            for ema_param, param in zip(self.model.parameters(), parameters):
-                ema_param.data = self.decay * ema_param.data + (1 - self.decay) * param
+            for ema_tensor, tensor in zip(self.model.state_dict().values(), parameters):
+                tensor = tensor.to(device=ema_tensor.device, dtype=ema_tensor.dtype)
+                if ema_tensor.is_floating_point() or ema_tensor.is_complex():
+                    ema_tensor.copy_(self.decay * ema_tensor + (1 - self.decay) * tensor)
+                else:
+                    ema_tensor.copy_(tensor)
         self.update_decay()
 
     def FedAvg(self, parameters):
         with torch.no_grad():
-            for ema_param, param in zip(self.model.parameters(), parameters):
-                ema_param.data = param
+            for ema_tensor, tensor in zip(self.model.state_dict().values(), parameters):
+                ema_tensor.copy_(tensor.to(device=ema_tensor.device, dtype=ema_tensor.dtype))
 
     def forward(self, *args, **kwargs):
         return self.model(*args, **kwargs)

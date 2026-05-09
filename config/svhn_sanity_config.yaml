@@ -16,7 +16,7 @@ train:
   initial_weight: 0.0
   final_weight: 0.0
   warm_mode: "gaussian"
-  device: 4
+  device: 5
   pseudo:
     use: False
     weight: 0.0
