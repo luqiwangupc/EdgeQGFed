@@ -1,10 +1,24 @@
-﻿import numpy as np
+﻿import os
+import zipfile
+from pathlib import Path
+
+import numpy as np
 import torch
 import torchvision.transforms as transforms
 from torch.utils.data import Dataset
 from torchvision import datasets
 
 from datasets import split_classes
+
+
+_HARBOX_CACHE = {}
+_HARBOX_ACTIVITY_LABELS = {
+    'Call': 0,
+    'Hop': 1,
+    'Walk': 2,
+    'Wave': 3,
+    'typing': 4,
+}
 
 
 def get_n_classes(name):
@@ -16,6 +30,8 @@ def get_n_classes(name):
         n_classes = 10
     elif name == 'svhn':
         n_classes = 10
+    elif name == 'harbox':
+        n_classes = 5
     elif name == 'mnist':
         n_classes = 10
     else:
@@ -40,6 +56,8 @@ def get_dataset_by_name(name, train=True, transform=None):
         dataset = datasets.SVHN(root='./data', split='train' if train else 'test', download=True, transform=transform)
         data = dataset.data
         targets = dataset.labels
+    elif name == 'harbox':
+        data, targets, _ = load_harbox_dataset(train=train)
     elif name == 'mnist':
         dataset = datasets.MNIST(root='./data', train=train, download=True, transform=transform)
         data = dataset.data
@@ -49,7 +67,230 @@ def get_dataset_by_name(name, train=True, transform=None):
     return data, targets
 
 
+def _first_existing_path(paths):
+    for path in paths:
+        if path.exists():
+            return path
+    return None
+
+
+def _array_from_keys(container, keys):
+    for key in keys:
+        if key in container:
+            return container[key]
+    return None
+
+
+def _normalize_harbox_labels(labels):
+    labels = np.asarray(labels, dtype=np.int64).reshape(-1)
+    unique_labels = np.unique(labels)
+    if unique_labels.min() == 1 and unique_labels.max() == len(unique_labels):
+        labels = labels - 1
+    return labels
+
+
+def _standardize_features(features):
+    features = np.asarray(features, dtype=np.float32)
+    features = features.reshape(features.shape[0], -1)
+    mean = features.mean(axis=0, keepdims=True)
+    std = features.std(axis=0, keepdims=True)
+    return (features - mean) / np.maximum(std, 1e-6)
+
+
+def _split_harbox_arrays(features, labels, users, train):
+    labels = _normalize_harbox_labels(labels)
+    features = _standardize_features(features)
+    if users is not None:
+        users = np.asarray(users).reshape(-1)
+        unique_users = np.array(sorted(np.unique(users).tolist()))
+        default_train_users = min(100, max(1, int(0.8 * len(unique_users))))
+        train_user_count = int(os.environ.get('HARBOX_TRAIN_USERS', default_train_users))
+        train_user_count = min(max(train_user_count, 1), max(len(unique_users) - 1, 1))
+        train_user_set = set(unique_users[:train_user_count].tolist())
+        mask = np.array([user in train_user_set for user in users], dtype=bool)
+        if not train:
+            mask = ~mask
+        return features[mask], labels[mask], users[mask]
+
+    rng = np.random.default_rng(2026)
+    indices = np.arange(len(labels))
+    rng.shuffle(indices)
+    split = int(0.8 * len(indices))
+    selected = indices[:split] if train else indices[split:]
+    return features[selected], labels[selected], None
+
+
+def _load_harbox_npz(path, train, split_file=False):
+    npz = np.load(path, allow_pickle=True)
+    split_key = 'train' if train else 'test'
+    split_features = _array_from_keys(npz, [f'{split_key}_x', f'{split_key}_X', f'X_{split_key}', f'x_{split_key}', f'{split_key}_data'])
+    split_labels = _array_from_keys(npz, [f'{split_key}_y', f'{split_key}_Y', f'y_{split_key}', f'labels_{split_key}', f'{split_key}_labels'])
+    if split_features is not None and split_labels is not None:
+        split_users = _array_from_keys(npz, [f'{split_key}_users', f'{split_key}_user_ids', f'users_{split_key}', f'user_ids_{split_key}'])
+        return _standardize_features(split_features), _normalize_harbox_labels(split_labels), split_users
+
+    features = _array_from_keys(npz, ['x', 'X', 'data', 'features', 'samples'])
+    labels = _array_from_keys(npz, ['y', 'Y', 'label', 'labels', 'targets'])
+    users = _array_from_keys(npz, ['user', 'users', 'user_id', 'user_ids', 'subject', 'subjects', 'node_id', 'node_ids'])
+    if features is None or labels is None:
+        raise ValueError(f'HARBox npz file {path} must contain feature and label arrays')
+    if split_file:
+        return _standardize_features(features), _normalize_harbox_labels(labels), users
+    return _split_harbox_arrays(features, labels, users, train)
+
+
+def _load_harbox_from_directory(root, train):
+    if root.is_file() and root.suffix.lower() == '.zip':
+        return _load_harbox_zip(root, train=train)
+
+    split_name = 'train' if train else 'test'
+    split_npz = _first_existing_path([
+        root / f'{split_name}.npz',
+        root / f'harbox_{split_name}.npz',
+        root / f'HARBox_{split_name}.npz',
+    ])
+    if split_npz is not None:
+        return _load_harbox_npz(split_npz, train=train, split_file=True)
+
+    dataset_npz = _first_existing_path([
+        root / 'harbox.npz',
+        root / 'HARBox.npz',
+        root / 'dataset.npz',
+        root / 'data.npz',
+    ])
+    if dataset_npz is not None:
+        return _load_harbox_npz(dataset_npz, train=train)
+
+    feature_file = _first_existing_path([root / 'X.npy', root / 'x.npy', root / 'features.npy', root / 'data.npy'])
+    label_file = _first_existing_path([root / 'y.npy', root / 'Y.npy', root / 'labels.npy', root / 'targets.npy'])
+    user_file = _first_existing_path([root / 'users.npy', root / 'user_ids.npy', root / 'subjects.npy', root / 'subject_ids.npy'])
+    if feature_file is None or label_file is None:
+        raise FileNotFoundError(
+            f'HARBox files are not found under {root}. Expected one of: '
+            'data/large_scale_HARBox.zip, data/harbox/harbox.npz, or data/harbox/X.npy plus data/harbox/y.npy. '
+            'You can also set HARBOX_ROOT to the official zip file or a preprocessed HARBox directory.'
+        )
+    features = np.load(feature_file, allow_pickle=True)
+    labels = np.load(label_file, allow_pickle=True)
+    users = np.load(user_file, allow_pickle=True) if user_file is not None else None
+    return _split_harbox_arrays(features, labels, users, train)
+
+
+def _harbox_windows_from_series(series, window_size=100, stride=100):
+    if series.shape[0] < window_size:
+        return np.empty((0, window_size * 9), dtype=np.float32)
+    windows = []
+    for start in range(0, series.shape[0] - window_size + 1, stride):
+        windows.append(series[start:start + window_size].reshape(-1))
+    return np.asarray(windows, dtype=np.float32)
+
+
+def _load_harbox_zip(zip_path, train):
+    split_keyword = '_train.txt' if train else '_test.txt'
+    features, labels, users = [], [], []
+    if not zipfile.is_zipfile(zip_path):
+        with open(zip_path, 'rb') as file:
+            file_head = file.read(16)
+        raise zipfile.BadZipFile(
+            f'{zip_path} is not a valid zip file. First bytes: {file_head!r}. '
+            'Please check whether the HARBox download is complete or whether the file is an HTML/download page.'
+        )
+    with zipfile.ZipFile(zip_path) as archive:
+        entries = [
+            entry for entry in archive.infolist()
+            if not entry.is_dir()
+            and entry.filename.endswith(split_keyword)
+            and '__MACOSX' not in entry.filename
+        ]
+        if not entries and not train:
+            entries = [
+                entry for entry in archive.infolist()
+                if not entry.is_dir()
+                and entry.filename.endswith('_train.txt')
+                and '__MACOSX' not in entry.filename
+            ]
+
+        for entry in entries:
+            parts = entry.filename.replace('\\', '/').split('/')
+            if len(parts) < 3:
+                continue
+            try:
+                user_id = int(parts[-2])
+            except ValueError:
+                continue
+            activity_name = parts[-1].split('_')[0]
+            if activity_name not in _HARBOX_ACTIVITY_LABELS:
+                continue
+            with archive.open(entry) as file:
+                series = np.loadtxt(file, dtype=np.float32)
+            if series.ndim == 1:
+                series = series.reshape(1, -1)
+            if series.shape[1] >= 10:
+                series = series[:, 1:10]
+            elif series.shape[1] != 9:
+                raise ValueError(f'Unexpected HARBox sensor dimension in {entry.filename}: {series.shape}')
+
+            window_features = _harbox_windows_from_series(series)
+            if window_features.size == 0:
+                continue
+            features.append(window_features)
+            labels.extend([_HARBOX_ACTIVITY_LABELS[activity_name]] * len(window_features))
+            users.extend([user_id] * len(window_features))
+
+    if not features:
+        raise FileNotFoundError(f'No HARBox {split_keyword} files found in {zip_path}')
+    return _split_harbox_arrays(
+        np.concatenate(features, axis=0),
+        np.asarray(labels, dtype=np.int64),
+        np.asarray(users, dtype=np.int64),
+        train=train,
+    )
+
+
+def load_harbox_dataset(train=True):
+    root_candidates = []
+    if os.environ.get('HARBOX_ROOT'):
+        root_candidates.append(Path(os.environ['HARBOX_ROOT']))
+    root_candidates.extend([
+        Path('./data/harbox'),
+        Path('./data/HARBox'),
+        Path('./data/HARBOX'),
+        Path('./data/large_scale_HARBox.zip'),
+    ])
+    errors = []
+    for root in root_candidates:
+        if not root.exists():
+            continue
+        cache_key = (str(root.resolve()), bool(train))
+        if cache_key in _HARBOX_CACHE:
+            return _HARBOX_CACHE[cache_key]
+        try:
+            dataset = _load_harbox_from_directory(root, train=train)
+        except FileNotFoundError as error:
+            errors.append(str(error))
+            continue
+        _HARBOX_CACHE[cache_key] = dataset
+        return dataset
+
+    searched_paths = ', '.join(str(path) for path in root_candidates)
+    detail = f' Last errors: {" | ".join(errors)}' if errors else ''
+    raise FileNotFoundError(
+        f'HARBox data is not available. Searched: {searched_paths}. '
+        'Put the official large_scale_HARBox.zip under data/, or set HARBOX_ROOT to that zip file.'
+        f'{detail}'
+    )
+
+
+def get_dataset_user_ids(name, train=True):
+    if name == 'harbox':
+        _, _, users = load_harbox_dataset(train=train)
+        return users
+    return None
+
+
 def _prepare_image(image, data_name):
+    if data_name == 'harbox':
+        return torch.as_tensor(image, dtype=torch.float32).view(-1)
     if isinstance(image, torch.Tensor):
         image = image.numpy()
     if data_name == 'svhn':
@@ -61,6 +302,8 @@ def _prepare_image(image, data_name):
 
 
 def build_base_transform(data_name, image_size=224, normalize='imagenet'):
+    if data_name == 'harbox':
+        return None
     if normalize == 'imagenet':
         mean = [0.485, 0.456, 0.406]
         std = [0.229, 0.224, 0.225]
@@ -77,6 +320,11 @@ def build_base_transform(data_name, image_size=224, normalize='imagenet'):
 
 
 def _build_augmentations(data_name='cifar10'):
+    if data_name == 'harbox':
+        weak_transform = transforms.Lambda(lambda x: x)
+        strong_transform = transforms.Lambda(lambda x: x + 0.01 * torch.randn_like(x))
+        return weak_transform, strong_transform
+
     if data_name in {'svhn', 'mnist', 'fashionmnist'}:
         weak_transform = transforms.Compose([
             transforms.RandomRotation(degrees=5),
@@ -120,6 +368,20 @@ def _dirichlet_partition(targets, num_clients, num_classes, alpha, min_client_si
 def _iid_partition(num_samples, num_clients):
     shuffled_indices = np.random.permutation(num_samples)
     return [np.array(split, dtype=np.int64) for split in np.array_split(shuffled_indices, num_clients)]
+
+
+def _user_partition(user_ids, num_clients):
+    if user_ids is None:
+        raise ValueError('User ids are required for user partition')
+    user_ids = np.asarray(user_ids)
+    unique_users = sorted(np.unique(user_ids).tolist())
+    if num_clients > len(unique_users):
+        raise ValueError(f'HARBox user partition has only {len(unique_users)} users, but num_clients={num_clients}')
+    client_indices = [[] for _ in range(num_clients)]
+    for group_index, user in enumerate(unique_users):
+        client_id = group_index % num_clients
+        client_indices[client_id].extend(np.where(user_ids == user)[0].tolist())
+    return [np.array(np.random.permutation(indices), dtype=np.int64) for indices in client_indices]
 
 
 def assign_clients_to_edges(num_clients, num_edges, assignment='round_robin'):
@@ -356,7 +618,14 @@ def build_client_registries(
     data, targets = get_dataset_by_name(data_name, train=train, transform=None)
     num_classes = get_n_classes(data_name)
 
-    if distributed == 'IID':
+    if data_name == 'harbox' and partition_mode == 'user':
+        user_ids = get_dataset_user_ids(data_name, train=train)
+        if user_ids is None:
+            client_indices = _iid_partition(len(data), num_clients)
+        else:
+            client_indices = _user_partition(user_ids, num_clients)
+        edge_assignments = assign_clients_to_edges(num_clients, num_edges, assignment=assignment)
+    elif distributed == 'IID':
         client_indices = _iid_partition(len(data), num_clients)
         edge_assignments = assign_clients_to_edges(num_clients, num_edges, assignment=assignment)
     elif distributed == 'nonIID':

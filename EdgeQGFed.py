@@ -163,37 +163,80 @@ def compact_metric_dict(metrics):
     }
 
 
-def build_train_log_metrics(metrics):
-    return compact_metric_dict({
-        'total_comm_mb': metrics.get('total_comm_mb'),
-        'formal_round_latency_s': metrics.get('formal_round_latency_s'),
+def _has_unlabeled_data(config):
+    return float(OmegaConf.select(config, 'datasets.labeled_ratio', default=1.0)) < 1.0
+
+
+def _is_dynamic_network_experiment(config):
+    mobility_mode = str(OmegaConf.select(config, 'network.mobility.mode', default='static')).lower()
+    bandwidth_mode = str(OmegaConf.select(config, 'network.bandwidth.mode', default='homogeneous')).lower()
+    drop_rate = OmegaConf.select(config, 'topology.client_drop_rate', default=0.0)
+    if OmegaConf.is_list(drop_rate) or isinstance(drop_rate, (list, tuple)):
+        has_drop = any(float(value) > 0 for value in drop_rate)
+    else:
+        has_drop = float(drop_rate) > 0
+    return (
+        has_drop
+        or mobility_mode != 'static'
+        or bandwidth_mode == 'sampled_distribution'
+    )
+
+
+def build_train_log_metrics(metrics, config):
+    log_metrics = {
+        'cumulative_comm_mb': metrics.get('cumulative_comm_mb'),
         'cumulative_estimated_latency_s': metrics.get('cumulative_estimated_latency_s'),
-        'samples_per_estimated_second': metrics.get('samples_per_estimated_second'),
         'round_wall_clock_s': metrics.get('round_wall_clock_s'),
         'edge_total_loss': metrics.get('total_loss'),
         'edge_class_loss': metrics.get('avg_class_loss'),
-        'edge_consistency_loss': metrics.get('avg_consis_loss'),
-        'edge_pseudo_loss': metrics.get('avg_pseudo_loss'),
-        'avg_pseudo_ratio': metrics.get('avg_pseudo_ratio'),
-        'avg_pseudo_weight': metrics.get('avg_pseudo_weight'),
-        'avg_agreement_ratio': metrics.get('avg_agreement_ratio'),
-        'avg_cloud_confidence': metrics.get('avg_cloud_confidence'),
-        'avg_edge_confidence': metrics.get('avg_edge_confidence'),
-        'graph_attention_mean': metrics.get('graph_attention_mean'),
-        'graph_attention_diag': metrics.get('graph_attention_diag'),
-        'graph_reliability_mean': metrics.get('graph_reliability_mean'),
-        'graph_label_ratio_mean': metrics.get('graph_label_ratio_mean'),
-        'graph_confidence_mean': metrics.get('graph_confidence_mean'),
-    })
+    }
+
+    if _has_unlabeled_data(config):
+        log_metrics['edge_consistency_loss'] = metrics.get('avg_consis_loss')
+
+    if _has_unlabeled_data(config) and bool(OmegaConf.select(config, 'train.pseudo.use', default=False)):
+        log_metrics.update({
+            'edge_pseudo_loss': metrics.get('avg_pseudo_loss'),
+            'avg_pseudo_ratio': metrics.get('avg_pseudo_ratio'),
+            'avg_pseudo_weight': metrics.get('avg_pseudo_weight'),
+            'avg_agreement_ratio': metrics.get('avg_agreement_ratio'),
+            'avg_cloud_confidence': metrics.get('avg_cloud_confidence'),
+            'avg_edge_confidence': metrics.get('avg_edge_confidence'),
+        })
+
+    if bool(OmegaConf.select(config, 'models.graph.use', default=False)):
+        log_metrics.update({
+            'graph_attention_mean': metrics.get('graph_attention_mean'),
+            'graph_attention_diag': metrics.get('graph_attention_diag'),
+            'graph_reliability_mean': metrics.get('graph_reliability_mean'),
+            'graph_label_ratio_mean': metrics.get('graph_label_ratio_mean'),
+            'graph_confidence_mean': metrics.get('graph_confidence_mean'),
+        })
+
+    if _is_dynamic_network_experiment(config):
+        log_metrics.update({
+            'total_comm_mb': metrics.get('total_comm_mb'),
+            'formal_round_latency_s': metrics.get('formal_round_latency_s'),
+            'samples_per_estimated_second': metrics.get('samples_per_estimated_second'),
+            'budget_used_ratio': metrics.get('budget_used_ratio'),
+            'client_drop_ratio': metrics.get('client_drop_ratio'),
+            'selected_clients': metrics.get('selected_clients'),
+            'active_clients': metrics.get('sampled_clients'),
+        })
+
+    return compact_metric_dict(log_metrics)
 
 
-def build_summary_metrics(config, best_accuracy, cumulative_estimated_latency_s, final_metrics=None):
+def build_summary_metrics(config, best_accuracy, cumulative_estimated_latency_s, cumulative_comm_mb, final_metrics=None):
     final_metrics = final_metrics or {}
     return compact_metric_dict({
         'best_cloud_accuracy': best_accuracy,
         'total_estimated_latency_s': cumulative_estimated_latency_s,
+        'total_comm_mb': cumulative_comm_mb,
         'final_total_comm_mb': final_metrics.get('total_comm_mb'),
         'final_formal_round_latency_s': final_metrics.get('formal_round_latency_s'),
+        'final_samples_per_estimated_second': final_metrics.get('samples_per_estimated_second'),
+        'final_budget_used_ratio': final_metrics.get('budget_used_ratio'),
         'final_selected_clients': final_metrics.get('selected_clients'),
         'final_active_clients': final_metrics.get('sampled_clients'),
         'final_client_drop_ratio': final_metrics.get('client_drop_ratio'),
@@ -216,6 +259,8 @@ def build_eval_log_metrics(val_metrics, edge_metrics, info_metrics):
         'cloud_loss': val_metrics.get('val_loss'),
         'edge_avg_accuracy': edge_metrics.get('edge_avg_acc'),
         'edge_avg_loss': edge_metrics.get('edge_avg_loss'),
+        'cumulative_comm_mb': info_metrics.get('cumulative_comm_mb'),
+        'cumulative_estimated_latency_s': info_metrics.get('cumulative_estimated_latency_s'),
         'time_to_target_accuracy_s': info_metrics.get('time_to_target_accuracy_s'),
         'wall_time_to_target_accuracy_s': info_metrics.get('wall_time_to_target_accuracy_s'),
     })
@@ -479,6 +524,7 @@ def train(config):
     first_target_wall_time = None
     train_start_wall = time.perf_counter()
     cumulative_estimated_latency_s = 0.0
+    cumulative_comm_mb = 0.0
     final_train_metrics = {}
     while current_steps < config.train.total_steps:
         round_start_wall = time.perf_counter()
@@ -571,12 +617,14 @@ def train(config):
         )
         cumulative_estimated_latency_s += formal_round_latency_s
         total_comm_mb = client_upload_mb + edge_upload_mb + cloud_downlink_mb
+        cumulative_comm_mb += total_comm_mb
         processed_samples = train_metrics['sampled_clients'] * config.datasets.batch_size
         train_metrics.update({
             'client_upload_mb': client_upload_mb,
             'edge_upload_mb': edge_upload_mb,
             'cloud_downlink_mb': cloud_downlink_mb,
             'total_comm_mb': total_comm_mb,
+            'cumulative_comm_mb': cumulative_comm_mb,
             'round_comm_budget_mb': float(config.network.round_comm_budget_mb),
             'budget_used_ratio': total_comm_mb / max(float(config.network.round_comm_budget_mb), 1e-8),
             'terminal_edge_upload_latency_s': terminal_edge_upload_latency_s,
@@ -596,7 +644,7 @@ def train(config):
         })
         final_train_metrics = train_metrics
 
-        wandb.log(build_train_log_metrics(train_metrics), step=current_steps)
+        wandb.log(build_train_log_metrics(train_metrics, config), step=current_steps)
 
         if (current_steps + 1) % config.train.log_step == 0:
             print(f"\nStep [{current_steps + 1}/{config.train.total_steps}]")
@@ -632,6 +680,8 @@ def train(config):
                 first_target_time = cumulative_estimated_latency_s
                 first_target_wall_time = time.perf_counter() - train_start_wall
             info_metrics = {
+                'cumulative_comm_mb': cumulative_comm_mb,
+                'cumulative_estimated_latency_s': cumulative_estimated_latency_s,
                 'time_to_target_accuracy_s': first_target_time if first_target_time is not None else -1.0,
                 'wall_time_to_target_accuracy_s': first_target_wall_time if first_target_wall_time is not None else -1.0,
             }
@@ -657,6 +707,7 @@ def train(config):
                 config=config,
                 best_accuracy=best_accuracy,
                 cumulative_estimated_latency_s=cumulative_estimated_latency_s,
+                cumulative_comm_mb=cumulative_comm_mb,
                 final_metrics=final_train_metrics,
             )
         )
@@ -672,7 +723,7 @@ if __name__ == '__main__':
     wandb.init(
         project='EdgeQGFed',
         dir='logs',
-        name=f"EdgeQGFed-avg-semi-{config.datasets.name}-{datetime.datetime.now().strftime('%Y%m%d-%H%M')}",
+        name=f"EdgeQGFed-aema3000-semi-{config.datasets.name}-{datetime.datetime.now().strftime('%Y%m%d-%H%M')}",
         config=OmegaConf.to_container(config),
         job_type='train',
     )

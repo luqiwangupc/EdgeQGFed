@@ -6,14 +6,20 @@ from einops import repeat
 def get_classifier(name: str, encoder_name: str, dataset_name: str) -> nn.Module:
     if dataset_name == 'cifar100':
         num_classes = 100
+    elif dataset_name == 'harbox':
+        num_classes = 5
     else:
         num_classes = 10
 
     if name == 'small-cnn':
         return SmallCNNClassifier(num_classes=num_classes)
+    if name in {'har-mlp', 'sensor-mlp'}:
+        return SensorMLPClassifier(input_dim=900, num_classes=num_classes)
 
     if encoder_name.__contains__('vit'):
         input_dim = 1000
+    elif dataset_name == 'harbox' and encoder_name == 'identity':
+        input_dim = 900
     elif encoder_name == 'identity':
         raise ValueError("classifier 'small-cnn' is required when encoder_name is 'identity'")
     else:
@@ -67,6 +73,26 @@ class SmallCNNClassifier(nn.Module):
 
     def forward(self, x):
         x = self.features(x)
+        return self.classifier(x)
+
+
+class SensorMLPClassifier(nn.Module):
+    def __init__(self, input_dim=900, num_classes=5, hidden_dim=256, dropout_rate=0.2):
+        super().__init__()
+        self.classifier = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(input_dim, hidden_dim),
+            nn.BatchNorm1d(hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout_rate),
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.BatchNorm1d(hidden_dim // 2),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout_rate),
+            nn.Linear(hidden_dim // 2, num_classes),
+        )
+
+    def forward(self, x):
         return self.classifier(x)
 
 

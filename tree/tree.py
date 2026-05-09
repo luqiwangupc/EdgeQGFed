@@ -254,12 +254,16 @@ class Tree:
         return next(iter(dataloader))
 
     def _estimate_client_upload_mb(self):
-        channels = int(self.config.network.client_input_channels)
-        img_size = int(self.config.network.client_image_size)
         views = int(self.config.network.client_view_count)
         bytes_per_value = int(self.config.network.bytes_per_value)
         batch_size = int(self.config.datasets.batch_size)
-        total_bytes = batch_size * channels * img_size * img_size * bytes_per_value * views
+        feature_dim = OmegaConf.select(self.config, 'network.client_feature_dim')
+        if feature_dim is not None:
+            total_bytes = batch_size * int(feature_dim) * bytes_per_value * views
+        else:
+            channels = int(self.config.network.client_input_channels)
+            img_size = int(self.config.network.client_image_size)
+            total_bytes = batch_size * channels * img_size * img_size * bytes_per_value * views
         return total_bytes / (1024 ** 2)
 
     def _estimate_edge_sync_mb(self):
