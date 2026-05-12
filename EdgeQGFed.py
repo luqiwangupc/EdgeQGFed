@@ -99,6 +99,16 @@ def tensor_megabytes(tensor):
     return tensor.numel() * tensor.element_size() / (1024 ** 2)
 
 
+def client_payload_megabytes(batch, encoded_views, config):
+    if OmegaConf.select(config, 'network.client_feature_dim') is not None:
+        return sum(tensor_megabytes(view) for view in encoded_views)
+    return (
+        tensor_megabytes(batch['img'])
+        + tensor_megabytes(batch['weak_img'])
+        + tensor_megabytes(batch['strong_img'])
+    )
+
+
 def parameter_list_megabytes(parameters):
     return sum(param.numel() * param.element_size() for param in parameters) / (1024 ** 2)
 
@@ -189,14 +199,20 @@ def build_train_log_metrics(metrics, config):
         'round_wall_clock_s': metrics.get('round_wall_clock_s'),
         'edge_total_loss': metrics.get('total_loss'),
         'edge_class_loss': metrics.get('avg_class_loss'),
+        'active_edges': metrics.get('active_edges'),
+        'selected_clients': metrics.get('selected_clients'),
+        'active_clients': metrics.get('sampled_clients'),
     }
 
     if _has_unlabeled_data(config):
         log_metrics['edge_consistency_loss'] = metrics.get('avg_consis_loss')
+        log_metrics['edge_weighted_consistency_loss'] = metrics.get('avg_weighted_consis_loss')
+        log_metrics['avg_consistency_ratio'] = metrics.get('avg_consistency_ratio')
 
     if _has_unlabeled_data(config) and bool(OmegaConf.select(config, 'train.pseudo.use', default=False)):
         log_metrics.update({
             'edge_pseudo_loss': metrics.get('avg_pseudo_loss'),
+            'edge_weighted_pseudo_loss': metrics.get('avg_weighted_pseudo_loss'),
             'avg_pseudo_ratio': metrics.get('avg_pseudo_ratio'),
             'avg_pseudo_weight': metrics.get('avg_pseudo_weight'),
             'avg_agreement_ratio': metrics.get('avg_agreement_ratio'),
@@ -266,11 +282,68 @@ def build_eval_log_metrics(val_metrics, edge_metrics, info_metrics):
     })
 
 
+def evaluate_and_log(
+    encoder_model,
+    tree,
+    valloader,
+    classification_criterion,
+    device,
+    current_steps,
+    cumulative_comm_mb,
+    cumulative_estimated_latency_s,
+    first_target_time,
+    first_target_wall_time,
+    train_start_wall,
+    target_accuracy,
+    best_accuracy,
+    config,
+):
+    val_metrics = evaluate(
+        encoded_model=encoder_model,
+        model=tree.root.model,
+        val_loader=valloader,
+        criterion=classification_criterion,
+        device=device,
+    )
+    edge_val_metrics = evaluate_edges(
+        encoded_model=encoder_model,
+        tree=tree,
+        val_loader=valloader,
+        criterion=classification_criterion,
+        device=device,
+    )
+    if first_target_time is None and val_metrics['val_accuracy'] >= target_accuracy:
+        first_target_time = cumulative_estimated_latency_s
+        first_target_wall_time = time.perf_counter() - train_start_wall
+    info_metrics = {
+        'cumulative_comm_mb': cumulative_comm_mb,
+        'cumulative_estimated_latency_s': cumulative_estimated_latency_s,
+        'time_to_target_accuracy_s': first_target_time if first_target_time is not None else -1.0,
+        'wall_time_to_target_accuracy_s': first_target_wall_time if first_target_wall_time is not None else -1.0,
+    }
+    print('\nValidation Metrics:')
+    print(f"Cloud Loss: {val_metrics['val_loss']:.4f}")
+    print(f"Cloud Accuracy: {val_metrics['val_accuracy']:.2f}%")
+    print(f"Edge Avg Accuracy: {edge_val_metrics['edge_avg_acc']:.2f}%")
+    if first_target_time is not None:
+        print(f"Time to Target Accuracy (s): {first_target_time:.3f}")
+        print(f"Wall Time to Target Accuracy (s): {first_target_wall_time:.3f}")
+    wandb.log(build_eval_log_metrics(val_metrics, edge_val_metrics, info_metrics), step=current_steps)
+
+    if val_metrics['val_accuracy'] > best_accuracy:
+        best_accuracy = val_metrics['val_accuracy']
+        os.makedirs(os.path.join(config.train.ckpt_save_path, config.datasets.name), exist_ok=True)
+        tree.root.model.save(os.path.join(config.train.ckpt_save_path, config.datasets.name, config.train.ckpt_save_name))
+
+    return best_accuracy, first_target_time, first_target_wall_time
+
+
 def edge_run_loop(
     tree,
     sampled_clients,
     encoder_model,
     config,
+    current_steps,
     consistency_weight,
     classification_criterion,
     consistency_criterion,
@@ -288,6 +361,7 @@ def edge_run_loop(
     edge_confidence_values = []
     cloud_confidence_values = []
     unlabeled_ratio_values = []
+    consistency_ratio_values = []
     edge_summaries = []
     sampled_client_count = 0
     num_classes = get_n_classes(config.datasets.name)
@@ -327,7 +401,6 @@ def edge_run_loop(
         client_is_labeled = batch['is_labeled'].to(device).bool()
         client_weak_input = batch['weak_img'].to(device)
         client_strong_input = batch['strong_img'].to(device)
-        client_upload_mb_by_edge[edge.name] = tensor_megabytes(batch['img']) + tensor_megabytes(batch['weak_img']) + tensor_megabytes(batch['strong_img'])
 
         if random.random() < config.models.attack_rate:
             client_inputs = torch.randn_like(client_inputs, device=device)
@@ -360,6 +433,12 @@ def edge_run_loop(
             client_strong_output = client_strong_output + laplace_noise(client_strong_output.shape, scale, device)
             client_strong_output = torch.clamp(client_strong_output, min=min_value, max=max_value)
 
+        client_upload_mb_by_edge[edge.name] = client_payload_megabytes(
+            batch,
+            [client_output, client_weak_output, client_strong_output],
+            config,
+        )
+
         encoded_inputs = client_output
         all_client_labels = client_labels
         all_client_is_labeled = client_is_labeled
@@ -387,7 +466,9 @@ def edge_run_loop(
         pseudo_weights = compute_soft_pseudo_weights(edge_confidence, cloud_confidence, agreement_mask, unlabeled_mask, config)
         effective_mask = pseudo_weights > config.train.pseudo.min_weight
 
-        if config.train.pseudo.use and effective_mask.any():
+        pseudo_start_step = int(OmegaConf.select(config, 'train.pseudo.start_step', default=0))
+        pseudo_active = bool(config.train.pseudo.use) and current_steps >= pseudo_start_step
+        if pseudo_active and effective_mask.any():
             pseudo_loss = compute_weighted_cross_entropy(
                 edge_consistency_output[effective_mask],
                 cloud_prediction[effective_mask],
@@ -396,18 +477,21 @@ def edge_run_loop(
         else:
             pseudo_loss = scalar_zero(device)
 
-        if unlabeled_mask.any():
+        consistency_mask = unlabeled_mask
+        if bool(OmegaConf.select(config, 'train.consistency_confidence_gate', default=False)):
+            consistency_mask = effective_mask
+        if consistency_mask.any():
             consistency_loss = compute_consistency_loss(
                 consistency_criterion,
-                edge_probs[unlabeled_mask],
-                cloud_probs[unlabeled_mask],
+                edge_probs[consistency_mask],
+                cloud_probs[consistency_mask],
                 config.train.consis_fn,
             )
         else:
             consistency_loss = scalar_zero(device)
 
         loss = classification_loss + consistency_weight * consistency_loss
-        if config.train.pseudo.use:
+        if pseudo_active:
             loss = loss + config.train.pseudo.weight * pseudo_loss
         edge.optimizer_step(loss)
 
@@ -417,6 +501,7 @@ def edge_run_loop(
         agreement_ratio = agreement_mask[unlabeled_mask].float().mean().item() if unlabeled_mask.any() else 0.0
         mean_edge_confidence = edge_confidence[unlabeled_mask].mean().item() if unlabeled_mask.any() else 0.0
         mean_cloud_confidence = cloud_confidence[unlabeled_mask].mean().item() if unlabeled_mask.any() else 0.0
+        consistency_ratio = consistency_mask[unlabeled_mask].float().mean().item() if unlabeled_mask.any() else 0.0
         mean_confidence = mean_cloud_confidence
         labeled_ratio = all_client_is_labeled.float().mean().item()
         unlabeled_ratio = unlabeled_mask.float().mean().item()
@@ -437,6 +522,7 @@ def edge_run_loop(
         edge_confidence_values.append(mean_edge_confidence)
         cloud_confidence_values.append(mean_cloud_confidence)
         unlabeled_ratio_values.append(unlabeled_ratio)
+        consistency_ratio_values.append(consistency_ratio)
 
         if update:
             summary = {
@@ -457,12 +543,15 @@ def edge_run_loop(
     metrics['avg_class_loss'] = sum(class_loss) / active_edges if class_loss else 0.0
     metrics['avg_consis_loss'] = sum(consis_loss) / active_edges if consis_loss else 0.0
     metrics['avg_pseudo_loss'] = sum(pseudo_loss_values) / active_edges if pseudo_loss_values else 0.0
+    metrics['avg_weighted_consis_loss'] = consistency_weight * metrics['avg_consis_loss']
+    metrics['avg_weighted_pseudo_loss'] = config.train.pseudo.weight * metrics['avg_pseudo_loss'] if config.train.pseudo.use else 0.0
     metrics['avg_pseudo_ratio'] = sum(pseudo_ratio_values) / active_edges if pseudo_ratio_values else 0.0
     metrics['avg_pseudo_weight'] = sum(pseudo_weight_values) / active_edges if pseudo_weight_values else 0.0
     metrics['avg_agreement_ratio'] = sum(agreement_ratio_values) / active_edges if agreement_ratio_values else 0.0
     metrics['avg_edge_confidence'] = sum(edge_confidence_values) / active_edges if edge_confidence_values else 0.0
     metrics['avg_cloud_confidence'] = sum(cloud_confidence_values) / active_edges if cloud_confidence_values else 0.0
     metrics['avg_unlabeled_ratio'] = sum(unlabeled_ratio_values) / active_edges if unlabeled_ratio_values else 0.0
+    metrics['avg_consistency_ratio'] = sum(consistency_ratio_values) / active_edges if consistency_ratio_values else 0.0
     metrics['sampled_clients'] = sampled_client_count
     selected_client_count = sum(selected_client_count_by_edge.values())
     dropped_client_count = sum(dropped_client_count_by_edge.values())
@@ -526,6 +615,22 @@ def train(config):
     cumulative_estimated_latency_s = 0.0
     cumulative_comm_mb = 0.0
     final_train_metrics = {}
+    best_accuracy, first_target_time, first_target_wall_time = evaluate_and_log(
+        encoder_model=encoder_model,
+        tree=tree,
+        valloader=valloader,
+        classification_criterion=classification_criterion,
+        device=device,
+        current_steps=0,
+        cumulative_comm_mb=cumulative_comm_mb,
+        cumulative_estimated_latency_s=cumulative_estimated_latency_s,
+        first_target_time=first_target_time,
+        first_target_wall_time=first_target_wall_time,
+        train_start_wall=train_start_wall,
+        target_accuracy=config.network.target_accuracy,
+        best_accuracy=best_accuracy,
+        config=config,
+    )
     while current_steps < config.train.total_steps:
         round_start_wall = time.perf_counter()
         consistency_weight = get_warm_up_value(
@@ -541,6 +646,7 @@ def train(config):
             sampled_clients=sampled_clients,
             encoder_model=encoder_model,
             config=config,
+            current_steps=current_steps,
             consistency_weight=consistency_weight,
             classification_criterion=classification_criterion,
             consistency_criterion=consistency_criterion,
@@ -662,42 +768,22 @@ def train(config):
             print(f"Formal Round Latency (s): {train_metrics['formal_round_latency_s']:.3f}")
 
         if (current_steps + 1) % config.train.evaluate_step == 0:
-            val_metrics = evaluate(
-                encoded_model=encoder_model,
-                model=tree.root.model,
-                val_loader=valloader,
-                criterion=classification_criterion,
-                device=device,
-            )
-            edge_val_metrics = evaluate_edges(
-                encoded_model=encoder_model,
+            best_accuracy, first_target_time, first_target_wall_time = evaluate_and_log(
+                encoder_model=encoder_model,
                 tree=tree,
-                val_loader=valloader,
-                criterion=classification_criterion,
+                valloader=valloader,
+                classification_criterion=classification_criterion,
                 device=device,
+                current_steps=current_steps + 1,
+                cumulative_comm_mb=cumulative_comm_mb,
+                cumulative_estimated_latency_s=cumulative_estimated_latency_s,
+                first_target_time=first_target_time,
+                first_target_wall_time=first_target_wall_time,
+                train_start_wall=train_start_wall,
+                target_accuracy=config.network.target_accuracy,
+                best_accuracy=best_accuracy,
+                config=config,
             )
-            if first_target_time is None and val_metrics['val_accuracy'] >= config.network.target_accuracy:
-                first_target_time = cumulative_estimated_latency_s
-                first_target_wall_time = time.perf_counter() - train_start_wall
-            info_metrics = {
-                'cumulative_comm_mb': cumulative_comm_mb,
-                'cumulative_estimated_latency_s': cumulative_estimated_latency_s,
-                'time_to_target_accuracy_s': first_target_time if first_target_time is not None else -1.0,
-                'wall_time_to_target_accuracy_s': first_target_wall_time if first_target_wall_time is not None else -1.0,
-            }
-            print('\nValidation Metrics:')
-            print(f"Cloud Loss: {val_metrics['val_loss']:.4f}")
-            print(f"Cloud Accuracy: {val_metrics['val_accuracy']:.2f}%")
-            print(f"Edge Avg Accuracy: {edge_val_metrics['edge_avg_acc']:.2f}%")
-            if first_target_time is not None:
-                print(f"Time to Target Accuracy (s): {first_target_time:.3f}")
-                print(f"Wall Time to Target Accuracy (s): {first_target_wall_time:.3f}")
-            wandb.log(build_eval_log_metrics(val_metrics, edge_val_metrics, info_metrics), step=current_steps)
-
-            if val_metrics['val_accuracy'] > best_accuracy:
-                best_accuracy = val_metrics['val_accuracy']
-                os.makedirs(os.path.join(config.train.ckpt_save_path, config.datasets.name), exist_ok=True)
-                tree.root.model.save(os.path.join(config.train.ckpt_save_path, config.datasets.name, config.train.ckpt_save_name))
 
         current_steps += 1
 
@@ -723,7 +809,7 @@ if __name__ == '__main__':
     wandb.init(
         project='EdgeQGFed',
         dir='logs',
-        name=f"EdgeQGFed-aema3000-semi-{config.datasets.name}-{datetime.datetime.now().strftime('%Y%m%d-%H%M')}",
+        name=f"EdgeQGFed-semi-{config.datasets.name}-{datetime.datetime.now().strftime('%Y%m%d-%H%M')}",
         config=OmegaConf.to_container(config),
         job_type='train',
     )

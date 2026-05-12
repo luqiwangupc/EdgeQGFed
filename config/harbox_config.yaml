@@ -1,8 +1,8 @@
 train:
-  learning_rate: 1.0e-3
-  total_steps: 2000
+  learning_rate: 8.0e-4
+  total_steps: 6000
   log_step: 20
-  evaluate_step: 100
+  evaluate_step: 50
   ema_update_step: 1
   ckpt_save_path: "checkpoints"
   ckpt_save_name: "harbox_edgeqgfed.pth"
@@ -12,24 +12,26 @@ train:
   differential:
     use: False
     epsilon: 10
-  warm_up_steps: 300
+  warm_up_steps: 1500
   initial_weight: 0.0
-  final_weight: 1.0
+  final_weight: 0.2
   warm_mode: "gaussian"
-  device: 5
+  consistency_confidence_gate: True
+  device: 0
   pseudo:
     use: True
-    weight: 0.5
-    edge_threshold: 0.55
-    cloud_threshold: 0.60
+    weight: 0.1
+    start_step: 1200
+    edge_threshold: 0.82
+    cloud_threshold: 0.85
     temperature: 1.0
     weight_temperature: 0.1
-    min_weight: 0.05
+    min_weight: 0.2
 
 topology:
   num_edges: 5
   num_clients: 100
-  clients_per_round: 25
+  clients_per_round: 50
   edges_per_round: 5
   client_sample_mode: "resource_aware"
   assignment: "round_robin"
@@ -38,7 +40,7 @@ topology:
 datasets:
   name: "harbox"
   normalize: "none"
-  batch_size: 8
+  batch_size: 16
   labeled_ratio: 0.1
   edge_num_workers: 0
   edge_prefetch_factor: 2
@@ -55,7 +57,7 @@ datasets:
 
 models:
   encoder_name: "identity"
-  classifier_name: "har-mlp"
+  classifier_name: "har-cnn"
   ema_decay: 0.0
   ema_dynamic_decay: False
   pretrain_ckpt: null
@@ -113,13 +115,13 @@ network:
     bandwidth_weight: 0.25
     availability_weight: 0.15
     latency_cost_weight: 1.0
-  max_parallel_uploads_per_edge: 8
+  max_parallel_uploads_per_edge: 10
   client_view_count: 3
   client_input_channels: 1
   client_image_size: 1
   client_feature_dim: 900
   bytes_per_value: 4
-  target_accuracy: 80.0
+  target_accuracy: 70.0
 
 pretrain:
   epochs: 20

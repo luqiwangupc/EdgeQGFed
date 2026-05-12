@@ -176,7 +176,9 @@ def _load_harbox_from_directory(root, train):
     return _split_harbox_arrays(features, labels, users, train)
 
 
-def _harbox_windows_from_series(series, window_size=100, stride=100):
+def _harbox_windows_from_series(series, window_size=None, stride=None):
+    window_size = int(os.environ.get('HARBOX_WINDOW_SIZE', window_size or 100))
+    stride = int(os.environ.get('HARBOX_WINDOW_STRIDE', stride or 50))
     if series.shape[0] < window_size:
         return np.empty((0, window_size * 9), dtype=np.float32)
     windows = []
@@ -319,10 +321,29 @@ def build_base_transform(data_name, image_size=224, normalize='imagenet'):
     ])
 
 
+def _harbox_weak_augment(x):
+    return x + 0.005 * torch.randn_like(x)
+
+
+def _harbox_strong_augment(x):
+    augmented = x.view(-1, 9).clone()
+    scale = 1.0 + 0.05 * torch.randn(1, augmented.size(1), device=augmented.device, dtype=augmented.dtype)
+    augmented = augmented * scale
+    augmented = augmented + 0.02 * torch.randn_like(augmented)
+
+    if augmented.size(0) >= 10:
+        max_mask = max(1, augmented.size(0) // 10)
+        mask_len = int(torch.randint(1, max_mask + 1, (1,), device=augmented.device).item())
+        start = int(torch.randint(0, augmented.size(0) - mask_len + 1, (1,), device=augmented.device).item())
+        augmented[start:start + mask_len] = 0.0
+
+    return augmented.reshape(-1)
+
+
 def _build_augmentations(data_name='cifar10'):
     if data_name == 'harbox':
-        weak_transform = transforms.Lambda(lambda x: x)
-        strong_transform = transforms.Lambda(lambda x: x + 0.01 * torch.randn_like(x))
+        weak_transform = transforms.Lambda(_harbox_weak_augment)
+        strong_transform = transforms.Lambda(_harbox_strong_augment)
         return weak_transform, strong_transform
 
     if data_name in {'svhn', 'mnist', 'fashionmnist'}:

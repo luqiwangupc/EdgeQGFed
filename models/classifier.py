@@ -13,6 +13,8 @@ def get_classifier(name: str, encoder_name: str, dataset_name: str) -> nn.Module
 
     if name == 'small-cnn':
         return SmallCNNClassifier(num_classes=num_classes)
+    if name in {'har-cnn', 'sensor-cnn'}:
+        return SensorCNNClassifier(input_dim=900, num_classes=num_classes)
     if name in {'har-mlp', 'sensor-mlp'}:
         return SensorMLPClassifier(input_dim=900, num_classes=num_classes)
 
@@ -77,7 +79,7 @@ class SmallCNNClassifier(nn.Module):
 
 
 class SensorMLPClassifier(nn.Module):
-    def __init__(self, input_dim=900, num_classes=5, hidden_dim=256, dropout_rate=0.2):
+    def __init__(self, input_dim=900, num_classes=5, hidden_dim=512, dropout_rate=0.1):
         super().__init__()
         self.classifier = nn.Sequential(
             nn.Flatten(),
@@ -93,6 +95,43 @@ class SensorMLPClassifier(nn.Module):
         )
 
     def forward(self, x):
+        return self.classifier(x)
+
+
+class SensorCNNClassifier(nn.Module):
+    def __init__(self, input_dim=900, num_classes=5, sensor_channels=9, dropout_rate=0.15):
+        super().__init__()
+        if input_dim % sensor_channels != 0:
+            raise ValueError('input_dim must be divisible by sensor_channels')
+        self.sensor_channels = sensor_channels
+        self.window_size = input_dim // sensor_channels
+        self.features = nn.Sequential(
+            nn.BatchNorm1d(sensor_channels),
+            nn.Conv1d(sensor_channels, 64, kernel_size=7, padding=3, bias=False),
+            nn.BatchNorm1d(64),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout_rate),
+            nn.Conv1d(64, 128, kernel_size=5, padding=2, bias=False),
+            nn.BatchNorm1d(128),
+            nn.ReLU(inplace=True),
+            nn.MaxPool1d(kernel_size=2),
+            nn.Conv1d(128, 256, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm1d(256),
+            nn.ReLU(inplace=True),
+            nn.AdaptiveAvgPool1d(1),
+        )
+        self.classifier = nn.Sequential(
+            nn.Flatten(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(256, 128),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout_rate),
+            nn.Linear(128, num_classes),
+        )
+
+    def forward(self, x):
+        x = x.view(x.size(0), self.window_size, self.sensor_channels).transpose(1, 2).contiguous()
+        x = self.features(x)
         return self.classifier(x)
 
 

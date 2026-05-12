@@ -3,7 +3,7 @@
   total_steps: 5000
   log_step: 20
   evaluate_step: 100
-  ema_update_step: 50
+  ema_update_step: 1
   ckpt_save_path: "checkpoints"
   ckpt_save_name: "best_edgeqgfed_cifar10_l0.1.pth"
   class_fn: "CE"
@@ -16,35 +16,36 @@
   initial_weight: 0.0
   final_weight: 0.5
   warm_mode: "gaussian"
-  device: 7
+  device: 0
   pseudo:
     use: True
     weight: 0.3
-    edge_threshold: 0.4
-    cloud_threshold: 0.5
+    start_step: 1000
+    edge_threshold: 0.60
+    cloud_threshold: 0.65
     temperature: 1
     weight_temperature: 0.1
-    min_weight: 0.05
+    min_weight: 0.1
 
 topology:
   num_edges: 4
   num_clients: 128
   clients_per_round: 32
   edges_per_round: 4
-  # resource_aware
-  client_sample_mode: "balanced"
+  client_sample_mode: "resource_aware"
   assignment: "round_robin"
   client_drop_rate: 0.0
 
 datasets:
   name: 'cifar10'
+  normalize: "imagenet"
   batch_size: 64
   labeled_ratio: 0.1
   edge_num_workers: 4
   edge_prefetch_factor: 2
   eval_num_workers: 2
   pin_memory: True
-  distributed: "IID"
+  distributed: "nonIID"
   partition_mode: "client_dirichlet"
   partition_alpha: 0.3
   min_client_size: 16
@@ -59,8 +60,6 @@ models:
   ema_decay: 0.1
   ema_dynamic_decay: False
   pretrain_ckpt: null
-  # "/home/wangluqi/wlq/code/FED/FedSemi/checkpoints/pretrained/resnet50/svhn/epoch=19-val_loss=0.0356.ckpt"
-  #AEMA FedAvg
   algorithm: "AEMA"
   attack_rate: 0.0
   graph:
@@ -124,7 +123,7 @@ network:
   client_input_channels: 3
   client_image_size: 224
   bytes_per_value: 4
-  target_accuracy: 75.0
+  target_accuracy: 70.0
 
 pretrain:
   epochs: 20

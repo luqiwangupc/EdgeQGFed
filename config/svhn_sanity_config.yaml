@@ -1,11 +1,11 @@
 train:
   learning_rate: 1e-3
-  total_steps: 1000
+  total_steps: 3000
   log_step: 20
   evaluate_step: 100
   ema_update_step: 1
   ckpt_save_path: "checkpoints"
-  ckpt_save_name: "sanity_svhn_cnn_avg_semi.pth"
+  ckpt_save_name: "sanity_svhn_cnn_aema_semi.pth"
   class_fn: "CE"
   consis_fn: "MSE"
   optimizer: "AdamW"
@@ -59,7 +59,7 @@ models:
   ema_decay: 0.0
   ema_dynamic_decay: False
   pretrain_ckpt: null
-  algorithm: "FedAvg"
+  algorithm: "AEMA"
   attack_rate: 0.0
   graph:
     use: True
