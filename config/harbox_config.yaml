@@ -62,6 +62,7 @@ models:
   ema_dynamic_decay: False
   pretrain_ckpt: null
   algorithm: "FedAvg"
+  aggregation_mode: "auto"
   attack_rate: 0.0
   graph:
     use: True

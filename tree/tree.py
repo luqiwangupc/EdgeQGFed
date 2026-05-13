@@ -11,6 +11,27 @@ from datasets.SemiDatasets import build_base_transform, build_client_registries,
 from models.GetModel import get_model
 
 
+def resolve_aggregation_mode(config):
+    mode = str(OmegaConf.select(config, 'models.aggregation_mode', default='auto')).lower()
+    if mode == 'auto':
+        return 'state_dict' if str(config.datasets.name).lower() == 'harbox' else 'parameters'
+    if mode not in {'parameters', 'state_dict'}:
+        raise ValueError(f"Unknown models.aggregation_mode: {mode}")
+    return mode
+
+
+def aggregation_tensors(model, mode):
+    if mode == 'state_dict':
+        return list(model.state_dict().values())
+    if mode == 'parameters':
+        return list(model.parameters())
+    raise ValueError(f'Unknown aggregation mode: {mode}')
+
+
+def clone_aggregation_tensors(model, mode):
+    return [tensor.detach().clone() for tensor in aggregation_tensors(model, mode)]
+
+
 class TreeNode:
     def __init__(self, name):
         self.name = name
@@ -18,6 +39,7 @@ class TreeNode:
         self.level = 0
         self.model = None
         self.optimizer = None
+        self.aggregation_mode = 'parameters'
 
     def add_child(self, child_node):
         if self.level >= 1:
@@ -37,6 +59,7 @@ class TreeNode:
     def init_model(self, config):
         print(f'Initialize model for node {self.name}')
         self.model = get_model(self.level, config)
+        self.aggregation_mode = resolve_aggregation_mode(config)
 
     def set_optimizer(self, optimizer):
         assert self.level == 1, 'Only edge nodes can own optimizers'
@@ -56,14 +79,14 @@ class TreeNode:
         assert self.level == 1, 'Only edge nodes upload parameters'
         if self.model is None:
             raise ValueError('Model is None')
-        return [tensor.detach().clone() for tensor in self.model.state_dict().values()]
+        return clone_aggregation_tensors(self.model, self.aggregation_mode)
 
     def set_parameters(self, parameters):
         assert self.level == 1, 'Only edge nodes receive personalized parameters'
         if self.model is None:
             raise ValueError('Model is None')
         with torch.no_grad():
-            for tensor, new_tensor in zip(self.model.state_dict().values(), parameters):
+            for tensor, new_tensor in zip(aggregation_tensors(self.model, self.aggregation_mode), parameters):
                 tensor.copy_(new_tensor.to(device=tensor.device, dtype=tensor.dtype))
 
 
@@ -269,7 +292,10 @@ class Tree:
     def _estimate_edge_sync_mb(self):
         for edge in self.root.children:
             if edge.model is not None:
-                total_bytes = sum(tensor.numel() * tensor.element_size() for tensor in edge.model.state_dict().values())
+                total_bytes = sum(
+                    tensor.numel() * tensor.element_size()
+                    for tensor in aggregation_tensors(edge.model, edge.aggregation_mode)
+                )
                 return total_bytes / (1024 ** 2)
         return 0.0
 

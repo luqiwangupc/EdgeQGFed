@@ -14,7 +14,7 @@ from torch.utils.data import DataLoader
 from datasets.SemiDatasets import FedSemiDataset, build_base_transform, get_n_classes
 from models.encoder import get_encoder
 from models.graph_aggregator import HierarchicalGraphAggregator
-from tree.tree import create_tree
+from tree.tree import clone_aggregation_tensors, create_tree
 from utils.evaluate import evaluate
 from utils.losses import get_loss_function
 from utils.warmup import get_warm_up_value
@@ -90,7 +90,8 @@ def average_edge_parameters(edge_summaries):
 
 
 def sync_edge_models_from_cloud(tree):
-    cloud_parameters = [tensor.detach().clone() for tensor in tree.root.model.model.state_dict().values()]
+    aggregation_mode = tree.root.aggregation_mode
+    cloud_parameters = clone_aggregation_tensors(tree.root.model.model, aggregation_mode)
     for edge in tree.root.children:
         edge.set_parameters(cloud_parameters)
 
@@ -663,12 +664,14 @@ def train(config):
             if config.models.graph.use:
                 aggregation_result = graph_aggregator.aggregate(edge_summaries)
                 if aggregation_result['global_parameters'] is not None:
-                    tree.root.model.update_by_parameters(aggregation_result['global_parameters'])
+                    global_parameters = aggregation_result['global_parameters']
+                    tree.root.model.update_by_parameters(global_parameters)
                     for edge in tree.root.children:
                         personalized_parameters = aggregation_result['personalized_parameters'].get(edge.name)
-                        if personalized_parameters is not None:
-                            edge.set_parameters(personalized_parameters)
-                            edge_downlink_mb = parameter_list_megabytes(personalized_parameters)
+                        edge_parameters = personalized_parameters if personalized_parameters is not None else global_parameters
+                        if edge_parameters is not None:
+                            edge.set_parameters(edge_parameters)
+                            edge_downlink_mb = parameter_list_megabytes(edge_parameters)
                             cloud_downlink_mb_by_edge[edge.name] = edge_downlink_mb
                             cloud_downlink_mb += edge_downlink_mb
                     train_metrics.update(aggregation_result['metrics'])
@@ -809,7 +812,7 @@ if __name__ == '__main__':
     wandb.init(
         project='EdgeQGFed',
         dir='logs',
-        name=f"EdgeQGFed-semi-{config.datasets.name}-{datetime.datetime.now().strftime('%Y%m%d-%H%M')}",
+        name=f"EdgeQGFed-old-config-{config.datasets.name}-{datetime.datetime.now().strftime('%Y%m%d-%H%M')}",
         config=OmegaConf.to_container(config),
         job_type='train',
     )

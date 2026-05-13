@@ -22,7 +22,8 @@ class EMA(torch.nn.Module):
 
     def update_by_model(self, model):
         with torch.no_grad():
-            for ema_tensor, tensor in zip(self.model.state_dict().values(), model.state_dict().values()):
+            source_tensors = self._matching_tensors(model.state_dict().values())
+            for ema_tensor, tensor in zip(source_tensors[0], source_tensors[1]):
                 tensor = tensor.to(device=ema_tensor.device, dtype=ema_tensor.dtype)
                 if ema_tensor.is_floating_point() or ema_tensor.is_complex():
                     ema_tensor.copy_(self.decay * ema_tensor + (1 - self.decay) * tensor)
@@ -40,7 +41,7 @@ class EMA(torch.nn.Module):
 
     def AEMA(self, parameters):
         with torch.no_grad():
-            for ema_tensor, tensor in zip(self.model.state_dict().values(), parameters):
+            for ema_tensor, tensor in zip(self._target_tensors(parameters), parameters):
                 tensor = tensor.to(device=ema_tensor.device, dtype=ema_tensor.dtype)
                 if ema_tensor.is_floating_point() or ema_tensor.is_complex():
                     ema_tensor.copy_(self.decay * ema_tensor + (1 - self.decay) * tensor)
@@ -50,11 +51,27 @@ class EMA(torch.nn.Module):
 
     def FedAvg(self, parameters):
         with torch.no_grad():
-            for ema_tensor, tensor in zip(self.model.state_dict().values(), parameters):
+            for ema_tensor, tensor in zip(self._target_tensors(parameters), parameters):
                 ema_tensor.copy_(tensor.to(device=ema_tensor.device, dtype=ema_tensor.dtype))
 
     def forward(self, *args, **kwargs):
         return self.model(*args, **kwargs)
+
+    def _target_tensors(self, parameters):
+        state_tensors = list(self.model.state_dict().values())
+        if len(parameters) == len(state_tensors):
+            return state_tensors
+        model_parameters = list(self.model.parameters())
+        if len(parameters) == len(model_parameters):
+            return model_parameters
+        raise ValueError(
+            f'Parameter count mismatch: got {len(parameters)}, '
+            f'expected {len(model_parameters)} parameters or {len(state_tensors)} state tensors'
+        )
+
+    def _matching_tensors(self, source):
+        source = list(source)
+        return self._target_tensors(source), source
 
     def update_decay(self):
         if not self.dynamic_decay:
