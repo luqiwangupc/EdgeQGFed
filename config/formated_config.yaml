@@ -1,6 +1,6 @@
 ﻿train:
-  learning_rate: 1e-4
-  total_steps: 2000
+  learning_rate: 3e-4
+  total_steps: 3000
   log_step: 20
   evaluate_step: 100
   ema_update_step: 50
@@ -12,18 +12,18 @@
   differential:
     use: False
     epsilon: 10
-  warm_up_steps: 2000
+  warm_up_steps: 1000
   initial_weight: 0.0
-  final_weight: 0.5
+  final_weight: 0.4
   warm_mode: "gaussian"
   consistency_confidence_gate: False
-  device: 2
+  device: 0
   pseudo:
     use: True
-    weight: 0.3
-    start_step: 0
-    edge_threshold: 0.4
-    cloud_threshold: 0.5
+    weight: 0.25
+    start_step: 300
+    edge_threshold: 0.5
+    cloud_threshold: 0.6
     temperature: 1
     weight_temperature: 0.1
     min_weight: 0.05
@@ -33,14 +33,13 @@ topology:
   num_clients: 128
   clients_per_round: 32
   edges_per_round: 4
-  # resource_aware balanced
-  client_sample_mode: "balanced"
+  client_sample_mode: "resource_aware"
   assignment: "round_robin"
   client_drop_rate: 0.0
 
 datasets:
   name: 'cifar10'
-  normalize: "half"
+  normalize: "imagenet"
   batch_size: 64
   labeled_ratio: 0.1
   edge_num_workers: 4

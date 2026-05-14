@@ -369,28 +369,26 @@ def _build_augmentations(data_name='cifar10'):
     if data_name == 'cifar100':
         weak_transform = transforms.Compose([
             transforms.RandomHorizontalFlip(p=0.5),
-            transforms.RandomRotation(degrees=8),
+            transforms.RandomRotation(degrees=5),
         ])
         strong_transform = transforms.Compose([
-            transforms.RandomResizedCrop(size=(224, 224), scale=(0.75, 1.0), antialias=True),
+            transforms.RandomResizedCrop(size=(224, 224), scale=(0.9, 1.0), antialias=True),
             transforms.RandomHorizontalFlip(p=0.5),
-            transforms.RandomRotation(degrees=15),
-            transforms.ColorJitter(brightness=0.25, contrast=0.25, saturation=0.25),
-            transforms.RandomAffine(degrees=0, translate=(0.04, 0.04)),
+            transforms.RandomRotation(degrees=10),
+            transforms.RandomAffine(degrees=0, translate=(0.03, 0.03)),
         ])
         return weak_transform, strong_transform
 
     if data_name == 'cifar10':
         weak_transform = transforms.Compose([
             transforms.RandomHorizontalFlip(p=0.5),
-            transforms.RandomRotation(degrees=10),
+            transforms.RandomRotation(degrees=5),
         ])
         strong_transform = transforms.Compose([
-            transforms.RandomResizedCrop(size=(224, 224), scale=(0.8, 1.0), antialias=True),
+            transforms.RandomResizedCrop(size=(224, 224), scale=(0.9, 1.0), antialias=True),
             transforms.RandomHorizontalFlip(p=0.5),
-            transforms.RandomRotation(degrees=20),
-            transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3),
-            transforms.RandomAffine(degrees=0, translate=(0.05, 0.05)),
+            transforms.RandomRotation(degrees=10),
+            transforms.RandomAffine(degrees=0, translate=(0.03, 0.03)),
         ])
         return weak_transform, strong_transform
 

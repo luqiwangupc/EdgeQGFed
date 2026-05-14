@@ -46,7 +46,7 @@ datasets:
   pin_memory: True
   distributed: "IID"
   partition_mode: "client_dirichlet"
-  partition_alpha: 0.3
+  partition_alpha: 0.1
   min_client_size: 16
   edge_dirichlet_alpha: 0.3
   client_dirichlet_alpha: 1.0

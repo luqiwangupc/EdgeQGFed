@@ -1,11 +1,11 @@
 train:
-  learning_rate: 1e-4
+  learning_rate: 3e-4
   total_steps: 6000
   log_step: 20
   evaluate_step: 100
   ema_update_step: 50
   ckpt_save_path: "checkpoints"
-  ckpt_save_name: "best_basic_cifar100_l0.1.pth"
+  ckpt_save_name: "best_edgeqgfed_cifar100_l0.1.pth"
   class_fn: "CE"
   consis_fn: "MSE"
   optimizer: "AdamW"
@@ -14,14 +14,15 @@ train:
     epsilon: 10
   warm_up_steps: 2500
   initial_weight: 0.0
-  final_weight: 0.5
+  final_weight: 0.4
   warm_mode: "gaussian"
   device: 2
   pseudo:
     use: True
-    weight: 0.3
-    edge_threshold: 0.45
-    cloud_threshold: 0.55
+    weight: 0.2
+    start_step: 1000
+    edge_threshold: 0.35
+    cloud_threshold: 0.45
     temperature: 1
     weight_temperature: 0.1
     min_weight: 0.05
@@ -31,7 +32,7 @@ topology:
   num_clients: 128
   clients_per_round: 32
   edges_per_round: 4
-  client_sample_mode: "balanced"
+  client_sample_mode: "resource_aware"
   assignment: "round_robin"
   client_drop_rate: 0.0
 
@@ -77,7 +78,7 @@ network:
   client_uplink_bandwidth_mbps: 80
   edge_uplink_bandwidth_mbps: 400
   cloud_downlink_bandwidth_mbps: 800
-  client_feature_dim: 204
+  client_feature_dim: 2048
   budget:
     include_model_sync: True
   bandwidth:

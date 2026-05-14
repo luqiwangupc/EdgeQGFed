@@ -20,11 +20,13 @@ model updates. The cloud server coordinates cross-edge knowledge sharing. This d
 edge environments where clients have limited computation, energy, and wireless connectivity,
 while edge servers and the cloud have stronger computation and more stable communication links.
 
-Let $f_\phi(\cdot)$ denote a shared feature encoder and $h_{\theta_e}(\cdot)$ denote the
-classifier maintained by edge server $e$. In this work, the encoder is used as a feature
-extractor and the edge classifier is updated during training. The cloud maintains a teacher
-classifier $h_{\theta_c}(\cdot)$, which is updated from edge models through cloud-side
-aggregation.
+Let $f_\phi(\cdot)$ denote a feature encoder and $h_{\theta_e}(\cdot)$ denote the classifier
+maintained by edge server $e$. For image tasks, $f_\phi$ can be instantiated by a pretrained
+visual encoder. For sensor time-series tasks, $f_\phi$ can be an identity mapping or a
+lightweight transformation, while the edge classifier directly handles temporal features. In
+this work, the encoder is used as a feature extractor and the edge classifier is updated during
+training. The cloud maintains a teacher classifier $h_{\theta_c}(\cdot)$, which is updated from
+edge models through cloud-side aggregation.
 
 \subsection{Learning Objective Under Network Constraints}
 \label{subsec:objective}
@@ -40,10 +42,11 @@ The client selection must satisfy a round communication budget:
     \le B_t,
     \label{eq:budget}
 \end{equation}
-where $m_i^{\mathrm{ce}}$ is the client-to-edge upload size, $m_e^{\mathrm{ec}}$ is the
-edge-to-cloud upload size, $m_e^{\mathrm{ceg}}$ is the cloud-to-edge downlink size, and $B_t$
-is the communication budget of round $t$. $\mathcal{E}_t$ denotes the set of active edge
-servers in round $t$.
+where $m_i^{\mathrm{ce}}$ is the client-to-edge upload size, corresponding to either raw
+mini-batch data or lightweight features, $m_e^{\mathrm{ec}}$ is the edge-to-cloud upload size
+including model updates and edge summaries, $m_e^{\mathrm{ceg}}$ is the cloud-to-edge downlink
+size, and $B_t$ is the communication budget of round $t$. $\mathcal{E}_t$ denotes the set of
+active edge servers in round $t$.
 
 We also model the round latency as a three-level cloud-edge-client process:
 \begin{equation}
@@ -65,7 +68,12 @@ also communication cost and time-to-target-accuracy.
 
 EdgeQGFed is a communication-efficient cloud-edge-client collaborative learning framework. It
 contains three key components: edge-side semi-supervised training, cloud-side quality-aware graph
-attention aggregation, and resource-aware client sampling under network constraints.
+attention aggregation, and resource-aware client sampling under network constraints. To support
+different data modalities, EdgeQGFed adopts modality-aware configurations for augmentation,
+partitioning, and aggregation payloads. Image tasks use image augmentations and Dirichlet
+partitions, while sensor time-series tasks use temporal perturbations and user-level partitions.
+For image tasks, EdgeQGFed aggregates trainable parameters by default; for sensor tasks, it can
+aggregate the full model state when preserving task-specific statistics is beneficial.
 
 \subsection{Edge-Side Semi-Supervised Training}
 \label{subsec:edge_training}
@@ -84,7 +92,8 @@ the edge server minimizes the supervised cross-entropy loss:
 where $\mathcal{B}_e^l$ is the labeled batch at edge $e$.
 
 For unlabeled samples, EdgeQGFed uses cloud-edge consistency. Given a weakly augmented input
-$x^w$ and a strongly augmented input $x^s$, the edge prediction and cloud prediction are:
+$x^w=a_w(x)$ and a strongly augmented input $x^s=a_s(x)$, the edge prediction and cloud
+prediction are:
 \begin{equation}
     p_e = \mathrm{softmax}\left(h_{\theta_e}(f_\phi(x^s))/T_p\right), \quad
     p_c = \mathrm{softmax}\left(h_{\theta_c}(f_\phi(x^w))/T_p\right),
@@ -97,6 +106,10 @@ where $T_p$ is the pseudo-label temperature. The consistency loss is:
     \label{eq:consistency_loss}
 \end{equation}
 where $d(\cdot,\cdot)$ can be mean squared error, $\ell_1$ distance, or KL divergence.
+The weak and strong augmentations are modality-aware: image tasks use cropping, rotation, and
+color perturbation; digit-oriented tasks avoid flipping; sensor time-series tasks use noise,
+scaling, and temporal masking. In practice, the consistency term can also be gated by
+confidence so that early unreliable predictions do not dominate edge training.
 
 To reduce confirmation bias, pseudo-labels are weighted by both edge confidence and cloud
 confidence. Let $\hat{y}_e=\arg\max p_e$, $\hat{y}_c=\arg\max p_c$, $q_e=\max p_e$, and
@@ -137,15 +150,17 @@ pseudo-label loss.
 \label{subsec:summary}
 
 After local edge training, each active edge server uploads a compact summary to the cloud. The
-summary contains model parameters, class prototypes, pseudo-label quality, labeled ratio,
+summary contains model updates, class prototypes, pseudo-label quality, labeled ratio,
 prediction confidence, and batch size:
 \begin{equation}
     s_e = \{\theta_e, P_e, n_e, \rho_e, r_e, c_e, b_e\}.
     \label{eq:summary}
 \end{equation}
-Here $P_e$ is the class prototype matrix, $n_e$ is the class-wise prototype count, $\rho_e$ is
-the average pseudo-label weight, $r_e$ is the labeled ratio, $c_e$ is the mean cloud confidence,
-and $b_e$ is the number of processed samples. For class $k$, the prototype is computed as:
+Here $\theta_e$ denotes the aggregation payload of edge $e$, which can be trainable parameters
+or the full model state depending on the task modality. $P_e$ is the class prototype matrix,
+$n_e$ is the class-wise prototype count, $\rho_e$ is the average pseudo-label weight, $r_e$ is
+the labeled ratio, $c_e$ is the mean cloud confidence, and $b_e$ is the number of processed
+samples. For class $k$, the prototype is computed as:
 \begin{equation}
     P_e^k =
     \frac{1}{|\mathcal{B}_{e,k}^l|}
@@ -216,8 +231,10 @@ Finally, the cloud teacher is updated by adaptive exponential moving average:
     \mu \theta_c + (1-\mu)\bar{\theta},
     \label{eq:ema}
 \end{equation}
-where $\mu$ is the EMA decay. The personalized parameters $\tilde{\theta}_i$ are sent back to
-edge servers for the next round.
+where $\mu$ is the EMA decay. When FedAvg is used, the update degenerates to directly replacing
+the cloud teacher with $\bar{\theta}$. The personalized parameters $\tilde{\theta}_i$ are sent
+back to edge servers for the next round. If an edge does not receive a personalized update in
+the current round, the global parameter $\bar{\theta}$ is used as a fallback synchronization.
 
 \subsection{Resource-Aware Client Sampling}
 \label{subsec:sampling}
@@ -246,14 +263,15 @@ links, or high dropout probability.
 \subsection{Overall Training Procedure}
 \label{subsec:procedure}
 
-The overall training process is as follows. In each round, the system first performs
-resource-aware client sampling under communication constraints. Active clients upload data or
-features to their associated edge servers. Each edge server updates its classifier using
+The overall training process is as follows. The system first determines the modality-aware
+augmentation, partitioning, and aggregation mode. In each round, it performs resource-aware
+client sampling under communication constraints. Active clients upload data or features to
+their associated edge servers. Each edge server updates its classifier using
 supervised loss, cloud-edge consistency loss, and confidence-aware pseudo-label loss. Then,
 active edges upload summaries to the cloud. The cloud constructs a quality-aware graph, computes
-attention-based personalized parameters, updates the cloud teacher by EMA, and sends
-personalized parameters back to edges. This loop continues until the total number of training
-rounds is reached.
+attention-based personalized parameters, updates the cloud teacher by EMA or FedAvg, and sends
+personalized or fallback global parameters back to edges. This loop continues until the total
+number of training rounds is reached.
 
 By combining hierarchical workload placement, graph-based cloud coordination, and
 network-aware sampling, EdgeQGFed targets the key challenge of edge intelligence: reaching high

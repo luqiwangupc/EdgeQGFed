@@ -244,30 +244,15 @@ def build_train_log_metrics(metrics, config):
     return compact_metric_dict(log_metrics)
 
 
-def build_summary_metrics(config, best_accuracy, cumulative_estimated_latency_s, cumulative_comm_mb, final_metrics=None):
-    final_metrics = final_metrics or {}
-    return compact_metric_dict({
-        'best_cloud_accuracy': best_accuracy,
-        'total_estimated_latency_s': cumulative_estimated_latency_s,
-        'total_comm_mb': cumulative_comm_mb,
-        'final_total_comm_mb': final_metrics.get('total_comm_mb'),
-        'final_formal_round_latency_s': final_metrics.get('formal_round_latency_s'),
-        'final_samples_per_estimated_second': final_metrics.get('samples_per_estimated_second'),
-        'final_budget_used_ratio': final_metrics.get('budget_used_ratio'),
-        'final_selected_clients': final_metrics.get('selected_clients'),
-        'final_active_clients': final_metrics.get('sampled_clients'),
-        'final_client_drop_ratio': final_metrics.get('client_drop_ratio'),
-        'round_comm_budget_mb': float(config.network.round_comm_budget_mb),
-        'target_accuracy': float(config.network.target_accuracy),
-        'labeled_ratio': float(config.datasets.labeled_ratio),
-        'partition_alpha': float(config.datasets.partition_alpha),
-        'num_clients': int(config.topology.num_clients),
-        'num_edges': int(config.topology.num_edges),
-        'clients_per_round': int(config.topology.clients_per_round),
-        'edges_per_round': int(config.topology.edges_per_round),
-        'client_drop_rate': float(config.topology.client_drop_rate),
-        'max_parallel_uploads_per_edge': int(config.network.max_parallel_uploads_per_edge),
-    })
+def print_best_metrics(best_metrics):
+    print('\nBest Checkpoint Metrics:')
+    print(f"Best Step: {best_metrics.get('step', 'N/A')}")
+    print(f"Best Cloud Accuracy: {best_metrics.get('cloud_accuracy', 0.0):.2f}%")
+    print(f"Best Cloud Loss: {best_metrics.get('cloud_loss', 0.0):.4f}")
+    print(f"Best Edge Avg Accuracy: {best_metrics.get('edge_avg_accuracy', 0.0):.2f}%")
+    print(f"Best Edge Avg Loss: {best_metrics.get('edge_avg_loss', 0.0):.4f}")
+    if best_metrics.get('checkpoint_path') is not None:
+        print(f"Best Checkpoint Path: {best_metrics['checkpoint_path']}")
 
 
 def build_eval_log_metrics(val_metrics, edge_metrics, info_metrics):
@@ -296,7 +281,7 @@ def evaluate_and_log(
     first_target_wall_time,
     train_start_wall,
     target_accuracy,
-    best_accuracy,
+    best_metrics,
     config,
 ):
     val_metrics = evaluate(
@@ -331,12 +316,23 @@ def evaluate_and_log(
         print(f"Wall Time to Target Accuracy (s): {first_target_wall_time:.3f}")
     wandb.log(build_eval_log_metrics(val_metrics, edge_val_metrics, info_metrics), step=current_steps)
 
+    best_accuracy = float(best_metrics.get('cloud_accuracy', 0.0))
     if val_metrics['val_accuracy'] > best_accuracy:
-        best_accuracy = val_metrics['val_accuracy']
-        os.makedirs(os.path.join(config.train.ckpt_save_path, config.datasets.name), exist_ok=True)
-        tree.root.model.save(os.path.join(config.train.ckpt_save_path, config.datasets.name, config.train.ckpt_save_name))
+        ckpt_dir = os.path.join(config.train.ckpt_save_path, config.datasets.name)
+        ckpt_path = os.path.join(ckpt_dir, config.train.ckpt_save_name)
+        os.makedirs(ckpt_dir, exist_ok=True)
+        tree.root.model.save(ckpt_path)
+        best_metrics.update({
+            'cloud_accuracy': val_metrics['val_accuracy'],
+            'cloud_loss': val_metrics['val_loss'],
+            'edge_avg_accuracy': edge_val_metrics['edge_avg_acc'],
+            'edge_avg_loss': edge_val_metrics['edge_avg_loss'],
+            'step': current_steps,
+            'checkpoint_path': ckpt_path,
+        })
+        print(f"Best checkpoint updated at step {current_steps}: {ckpt_path}")
 
-    return best_accuracy, first_target_time, first_target_wall_time
+    return best_metrics, first_target_time, first_target_wall_time
 
 
 def edge_run_loop(
@@ -608,7 +604,7 @@ def train(config):
     sync_edge_models_from_cloud(tree)
 
     current_steps = 0
-    best_accuracy = 0
+    best_metrics = {'cloud_accuracy': 0.0}
     round_start_wall = time.perf_counter()
     first_target_time = None
     first_target_wall_time = None
@@ -616,7 +612,7 @@ def train(config):
     cumulative_estimated_latency_s = 0.0
     cumulative_comm_mb = 0.0
     final_train_metrics = {}
-    best_accuracy, first_target_time, first_target_wall_time = evaluate_and_log(
+    best_metrics, first_target_time, first_target_wall_time = evaluate_and_log(
         encoder_model=encoder_model,
         tree=tree,
         valloader=valloader,
@@ -629,7 +625,7 @@ def train(config):
         first_target_wall_time=first_target_wall_time,
         train_start_wall=train_start_wall,
         target_accuracy=config.network.target_accuracy,
-        best_accuracy=best_accuracy,
+        best_metrics=best_metrics,
         config=config,
     )
     while current_steps < config.train.total_steps:
@@ -771,7 +767,7 @@ def train(config):
             print(f"Formal Round Latency (s): {train_metrics['formal_round_latency_s']:.3f}")
 
         if (current_steps + 1) % config.train.evaluate_step == 0:
-            best_accuracy, first_target_time, first_target_wall_time = evaluate_and_log(
+            best_metrics, first_target_time, first_target_wall_time = evaluate_and_log(
                 encoder_model=encoder_model,
                 tree=tree,
                 valloader=valloader,
@@ -784,22 +780,13 @@ def train(config):
                 first_target_wall_time=first_target_wall_time,
                 train_start_wall=train_start_wall,
                 target_accuracy=config.network.target_accuracy,
-                best_accuracy=best_accuracy,
+                best_metrics=best_metrics,
                 config=config,
             )
 
         current_steps += 1
 
-    if wandb.run is not None:
-        wandb.run.summary.update(
-            build_summary_metrics(
-                config=config,
-                best_accuracy=best_accuracy,
-                cumulative_estimated_latency_s=cumulative_estimated_latency_s,
-                cumulative_comm_mb=cumulative_comm_mb,
-                final_metrics=final_train_metrics,
-            )
-        )
+    print_best_metrics(best_metrics)
 
 
 if __name__ == '__main__':
