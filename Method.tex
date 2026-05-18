@@ -277,3 +277,245 @@ By combining hierarchical workload placement, graph-based cloud coordination, an
 network-aware sampling, EdgeQGFed targets the key challenge of edge intelligence: reaching high
 accuracy under limited bandwidth, heterogeneous links, label scarcity, and unstable client
 participation.
+
+\section{Experimental Evaluation}
+\label{sec:evaluation}
+
+This section evaluates EdgeQGFed from both learning and networking perspectives. Following the
+evaluation style of edge intelligence and networked learning systems, we do not only compare
+final accuracy. We also report communication cost, latency, time-to-accuracy, robustness under
+unstable client participation, and the contribution of each system component. Unless otherwise
+specified, all methods are evaluated under the same cloud-edge-client topology, data partition,
+communication budget, and training schedule. We report the best test performance achieved
+during training and record the corresponding communication and latency cost.
+
+\subsection{Experimental Setup}
+\label{subsec:exp_setup}
+
+\textbf{Datasets and tasks.}
+We evaluate EdgeQGFed on four public datasets that cover both sensor time-series and image
+tasks. HARBox is used as the main edge intelligence benchmark because its user-level sensor
+records naturally reflect client heterogeneity. SVHN, CIFAR-10, and CIFAR-100 are used to
+evaluate the generality of the framework on image-based learning tasks with different numbers
+of classes and difficulty levels. For HARBox, we partition data by users to emulate realistic
+client ownership. For SVHN, CIFAR-10, and CIFAR-100, we use Dirichlet non-IID partitions and
+report results under $\alpha=0.3$ and $\alpha=0.1$.
+
+\begin{table}[t]
+\centering
+\caption{Datasets and default partition settings.}
+\label{tab:datasets}
+\begin{tabular}{lcccc}
+\toprule
+Dataset & Modality & Classes & Partition & Labeled ratio \\
+\midrule
+HARBox & Sensor time-series & 5 & User-level & 0.1 \\
+SVHN & Image & 10 & Dirichlet & 0.1 \\
+CIFAR-10 & Image & 10 & Dirichlet & 0.1 \\
+CIFAR-100 & Image & 100 & Dirichlet & 0.1 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{System configuration.}
+The default topology contains one cloud server, multiple edge servers, and a set of clients.
+Each client is associated with one edge server. Unless otherwise stated, image datasets use
+4 edge servers and 128 clients, while HARBox uses user-level clients. In each round, the cloud
+selects a subset of clients according to the sampling policy, and active clients upload their
+mini-batch data or features to the corresponding edge server. The default bandwidth setting
+uses heterogeneous edge profiles. We further vary bandwidth, communication budget, and client
+dropout in dedicated experiments.
+
+\textbf{Compared methods.}
+We compare EdgeQGFed with hierarchical and semi-supervised federated baselines. H-FedAvg
+performs hierarchical FedAvg without graph modeling or pseudo-label learning. H-FedAvg+PL adds
+pseudo-label training to H-FedAvg. EdgeQGFed w/o Graph removes cloud-side graph attention and
+uses weighted parameter averaging. EdgeQGFed w/o RS replaces resource-aware sampling with
+balanced sampling. EdgeQGFed w/o PL removes the pseudo-label loss while keeping supervised and
+consistency training. The full EdgeQGFed uses resource-aware sampling, edge-side
+semi-supervised training, and cloud-side quality-aware graph attention aggregation.
+
+\textbf{Metrics.}
+We use cloud accuracy and edge-average accuracy to evaluate learning performance. We use total
+communication, cumulative communication, formal round latency, cumulative estimated latency,
+and time-to-target accuracy to evaluate network efficiency. We also report selected clients,
+active clients, client drop ratio, pseudo-label ratio, pseudo-label weight, and graph attention
+statistics to explain the behavior of the system.
+
+\subsection{Overall Performance}
+\label{subsec:overall_performance}
+
+We first compare EdgeQGFed with all baselines under the default network setting. This experiment
+answers whether EdgeQGFed can improve learning performance without sacrificing communication
+efficiency. Table~\ref{tab:overall_performance} reports cloud accuracy, edge-average accuracy,
+loss, time-to-target accuracy, and total communication. Figure~\ref{fig:overall} plots the
+accuracy curves over communication rounds and cumulative communication.
+
+\begin{table*}[t]
+\centering
+\caption{Overall performance under the default edge network setting.}
+\label{tab:overall_performance}
+\begin{tabular}{llcccccc}
+\toprule
+Dataset & Method & Cloud Acc. & Edge Acc. & Cloud Loss & Edge Loss & Time-to-Target & Comm. \\
+\midrule
+HARBox & H-FedAvg & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+HARBox & H-FedAvg+PL & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+HARBox & EdgeQGFed & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+SVHN & H-FedAvg & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+SVHN & H-FedAvg+PL & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+SVHN & EdgeQGFed & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+CIFAR-10 & H-FedAvg & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+CIFAR-10 & H-FedAvg+PL & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+CIFAR-10 & EdgeQGFed & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+CIFAR-100 & H-FedAvg & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+CIFAR-100 & H-FedAvg+PL & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+CIFAR-100 & EdgeQGFed & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\textbf{Figure design.}
+Figure~\ref{fig:overall}(a) is a line chart with communication rounds on the x-axis and cloud
+accuracy on the y-axis. Figure~\ref{fig:overall}(b) uses cumulative communication as the x-axis
+and cloud accuracy as the y-axis. Figure~\ref{fig:overall}(c) is a grouped bar chart comparing
+time-to-target accuracy across methods and datasets.
+
+\subsection{Communication Efficiency}
+\label{subsec:comm_efficiency}
+
+We next evaluate EdgeQGFed under different communication budgets. This experiment is central
+to networked edge learning because the best method should reach high accuracy with fewer
+uploaded bytes and fewer ineffective rounds. We vary the round communication budget and compare
+EdgeQGFed with H-FedAvg, H-FedAvg+PL, and EdgeQGFed w/o RS.
+
+\begin{table}[t]
+\centering
+\caption{Communication budget sensitivity.}
+\label{tab:budget}
+\begin{tabular}{llcccc}
+\toprule
+Dataset & Budget & Method & Cloud Acc. & Time-to-Target & Budget Used \\
+\midrule
+HARBox & Low & H-FedAvg & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+HARBox & Low & EdgeQGFed & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+CIFAR-10 & Medium & H-FedAvg & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+CIFAR-10 & Medium & EdgeQGFed & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+CIFAR-100 & High & H-FedAvg & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+CIFAR-100 & High & EdgeQGFed & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Figure design.}
+The main figure is a line chart with cumulative communication on the x-axis and cloud accuracy
+on the y-axis. A second line chart uses round communication budget on the x-axis and
+time-to-target accuracy on the y-axis. These figures show whether EdgeQGFed converts limited
+communication resources into model improvement more efficiently.
+
+\subsection{Latency and Time-to-Accuracy}
+\label{subsec:latency}
+
+Accuracy alone is insufficient for edge intelligence systems. We therefore evaluate the
+three-layer latency model defined in Eq.~\eqref{eq:latency}. For each method, we report the
+latency components from client-to-edge upload, edge computation, edge-to-cloud upload, cloud
+aggregation, and cloud-to-edge downlink. We further report time-to-target accuracy, which
+measures how quickly a method reaches a practical accuracy target under the same network
+condition.
+
+\begin{table}[t]
+\centering
+\caption{Latency breakdown under the default network setting.}
+\label{tab:latency}
+\begin{tabular}{lccccc}
+\toprule
+Method & C2E & Edge & E2C & Cloud & C2E-Down \\
+\midrule
+H-FedAvg & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+EdgeQGFed w/o RS & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+EdgeQGFed & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Figure design.}
+The latency breakdown is plotted as a stacked bar chart. The x-axis is the method or dataset,
+and the y-axis is latency in seconds. Another line chart uses cumulative estimated latency on
+the x-axis and cloud accuracy on the y-axis.
+
+\subsection{Impact of Network Heterogeneity and Client Mobility}
+\label{subsec:heterogeneity}
+
+We evaluate robustness under heterogeneous bandwidth and unstable participation. For bandwidth
+heterogeneity, we test deterministic edge profiles and sampled bandwidth distributions. For
+client mobility, we vary the drop probability and optionally add handoff-induced drop boosts.
+This experiment tests whether resource-aware sampling can avoid clients with poor links and
+whether graph aggregation can remain stable when edge updates are incomplete.
+
+\begin{table}[t]
+\centering
+\caption{Robustness under client dropout and mobility.}
+\label{tab:dropout}
+\begin{tabular}{lcccc}
+\toprule
+Drop Rate & Method & Cloud Acc. & Active Clients & Time-to-Target \\
+\midrule
+0.0 & H-FedAvg & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+0.0 & EdgeQGFed & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+0.1 & H-FedAvg & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+0.1 & EdgeQGFed & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+0.3 & H-FedAvg & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+0.3 & EdgeQGFed & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Figure design.}
+For bandwidth heterogeneity, we use line charts with heterogeneity level on the x-axis and
+time-to-target accuracy or final cloud accuracy on the y-axis. For mobility, we use line charts
+with client drop rate on the x-axis and cloud accuracy on the y-axis.
+
+\subsection{Ablation Study}
+\label{subsec:ablation}
+
+We isolate the contribution of each component by removing graph attention aggregation,
+resource-aware sampling, pseudo-label learning, and cloud-edge consistency. The ablation study
+is conducted on HARBox and CIFAR-10 by default, and can be extended to CIFAR-100 for the
+hard-class setting. The expected result is that graph attention improves cross-edge knowledge
+sharing under non-IID data, resource-aware sampling reduces time-to-accuracy, and pseudo-label
+learning improves performance when labels are scarce.
+
+\begin{table}[t]
+\centering
+\caption{Ablation study.}
+\label{tab:ablation}
+\begin{tabular}{lcccc}
+\toprule
+Variant & Graph & RS & PL & Cloud Acc. \\
+\midrule
+Full EdgeQGFed & \checkmark & \checkmark & \checkmark & \rule{0.8cm}{0.4pt} \\
+w/o Graph & -- & \checkmark & \checkmark & \rule{0.8cm}{0.4pt} \\
+w/o RS & \checkmark & -- & \checkmark & \rule{0.8cm}{0.4pt} \\
+w/o PL & \checkmark & \checkmark & -- & \rule{0.8cm}{0.4pt} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Figure design.}
+We use a grouped bar chart with model variants on the x-axis and cloud accuracy,
+time-to-target accuracy, and communication cost on the y-axis. This figure should be placed
+after the main performance and efficiency results.
+
+\subsection{Sensitivity Analysis}
+\label{subsec:sensitivity}
+
+Finally, we study how EdgeQGFed behaves under different non-IID levels and label ratios. For
+SVHN, CIFAR-10, and CIFAR-100, we vary the Dirichlet parameter
+$\alpha\in\{0.1,0.3,0.5,1.0\}$. For weak supervision, we vary the labeled ratio in
+$\{0.05,0.1,0.2,1.0\}$. These experiments show whether EdgeQGFed remains effective when data
+heterogeneity becomes stronger or labeled data become scarce.
+
+\textbf{Figure design.}
+For non-IID sensitivity, the x-axis is the Dirichlet parameter and the y-axis is cloud
+accuracy. For label-ratio sensitivity, the x-axis is labeled ratio and the y-axis is cloud
+accuracy or edge-average accuracy. Curves include H-FedAvg, H-FedAvg+PL, and EdgeQGFed.

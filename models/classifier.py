@@ -3,7 +3,7 @@ import torch.nn as nn
 from einops import repeat
 
 
-def get_classifier(name: str, encoder_name: str, dataset_name: str) -> nn.Module:
+def get_classifier(name: str, encoder_name: str, dataset_name: str, dropout_rate: float = 0.5) -> nn.Module:
     if dataset_name == 'cifar100':
         num_classes = 100
     elif dataset_name == 'harbox':
@@ -18,8 +18,8 @@ def get_classifier(name: str, encoder_name: str, dataset_name: str) -> nn.Module
     if name in {'har-mlp', 'sensor-mlp'}:
         return SensorMLPClassifier(input_dim=900, num_classes=num_classes)
 
-    if encoder_name.__contains__('vit'):
-        input_dim = 1000
+    if encoder_name in {'vitb16', 'vitb32'}:
+        input_dim = 768
     elif dataset_name == 'harbox' and encoder_name == 'identity':
         input_dim = 900
     elif encoder_name == 'identity':
@@ -34,11 +34,11 @@ def get_classifier(name: str, encoder_name: str, dataset_name: str) -> nn.Module
     elif name == 'large-transformer':
         return LargeClassifier(input_dim=input_dim, num_classes=num_classes)
     elif name == 'small-mlp':
-        return SmallTransformerMLPClassifier(input_dim=input_dim, num_classes=num_classes)
+        return SmallTransformerMLPClassifier(input_dim=input_dim, num_classes=num_classes, dropout_rate=dropout_rate)
     elif name == 'medium-mlp':
-        return MediumTransformerMLPClassifier(input_dim=input_dim, num_classes=num_classes)
+        return MediumTransformerMLPClassifier(input_dim=input_dim, num_classes=num_classes, dropout_rate=dropout_rate)
     elif name == 'large-mlp':
-        return LargeTransformerMLPClassifier(input_dim=input_dim, num_classes=num_classes)
+        return LargeTransformerMLPClassifier(input_dim=input_dim, num_classes=num_classes, dropout_rate=dropout_rate)
     else:
         raise ValueError(f'no such classifier {name}')
 
@@ -280,7 +280,7 @@ class SmallTransformerMLPClassifier(nn.Module):
     def __init__(self, input_dim=576, hidden_dim1=256, hidden_dim2=128, num_classes=10, dropout_rate=0.5):
         super(SmallTransformerMLPClassifier, self).__init__()
         self.transformer_encoder = TransformerEncoder(input_dim, num_layers=1, num_heads=1, hidden_dim=1024, dropout=dropout_rate)
-        self.classfier = MLPClassifier(input_dim, hidden_dim1, hidden_dim2, num_classes)
+        self.classfier = MLPClassifier(input_dim, hidden_dim1, hidden_dim2, num_classes, dropout_rate=dropout_rate)
 
     def forward(self, x):
         x = self.transformer_encoder(x)
@@ -292,7 +292,7 @@ class MediumTransformerMLPClassifier(nn.Module):
     def __init__(self, input_dim=576, hidden_dim1=1024, hidden_dim2=512, num_classes=10, dropout_rate=0.5):
         super().__init__()
         self.transformer_encoder = TransformerEncoder(input_dim, num_layers=4, num_heads=4, hidden_dim=2048, dropout=dropout_rate)
-        self.classfier = MLPClassifier(input_dim, hidden_dim1, hidden_dim2, num_classes)
+        self.classfier = MLPClassifier(input_dim, hidden_dim1, hidden_dim2, num_classes, dropout_rate=dropout_rate)
 
     def forward(self, x):
         x = self.transformer_encoder(x)
@@ -303,7 +303,7 @@ class LargeTransformerMLPClassifier(nn.Module):
     def __init__(self, input_dim=576, hidden_dim1=2048, hidden_dim2=1024, num_classes=10, dropout_rate=0.5):
         super().__init__()
         self.transformer_encoder = TransformerEncoder(input_dim, num_layers=6, num_heads=8, hidden_dim=2048, dropout=dropout_rate)
-        self.classfier = MLPClassifier(input_dim, hidden_dim1, hidden_dim2, num_classes)
+        self.classfier = MLPClassifier(input_dim, hidden_dim1, hidden_dim2, num_classes, dropout_rate=dropout_rate)
 
     def forward(self, x):
         x = self.transformer_encoder(x)

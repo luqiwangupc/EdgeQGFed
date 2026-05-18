@@ -1,3 +1,7 @@
+\begin{abstract}
+边缘智能任务通常产生于大量分散终端，受限于带宽、算力、能耗和连接稳定性，难以直接采用传统端侧联邦训练；同时，边缘数据常具有 non-IID 分布和少标签特征。为此，本文提出 EdgeQGFed，一种面向通信受限边缘网络的云-边-端协同学习框架。该框架将主要训练负载上移至边缘服务器，利用云端图注意力机制对边缘节点间的语义关系和更新质量进行建模，并结合置信度加权伪标签学习缓解少标签训练问题。进一步地，EdgeQGFed 引入资源感知客户端采样和三层通信时延模型，以刻画带宽异构、客户端掉线和通信预算约束下的训练效率。实验将从模型精度、通信开销、time-to-accuracy 和鲁棒性等方面验证所提方法在跨模态边缘智能任务中的有效性。
+\end{abstract}
+
 \section{预备知识与问题定义}
 \label{sec:problem}
 
@@ -255,3 +259,178 @@ EdgeQGFed 的整体训练流程如算法~\ref{alg:edgeqgfed} 所示。首先，�
 \end{algorithm}
 
 通过结合分层训练负载分配、云端图注意力协同和网络感知客户端采样，EdgeQGFed 旨在解决跨模态边缘智能任务中的核心问题：在带宽受限、链路异构、标签稀缺和客户端参与不稳定条件下，实现更高效、更稳健的协同学习。
+
+\section{实验评估}
+\label{sec:evaluation}
+
+本节从学习性能和网络系统效率两个角度评估 EdgeQGFed。与只关注最终分类精度的实验设置不同，本文同时报告通信开销、三层训练时延、time-to-accuracy、客户端不稳定参与下的鲁棒性，以及各个系统组件对整体性能的贡献。除非特别说明，所有方法均在相同的云-边-端拓扑、数据划分、通信预算和训练轮数下比较。本文报告训练过程中达到的最佳测试性能，并记录达到该性能时对应的通信开销和估计时延。
+
+\subsection{实验设置}
+\label{subsec:exp_setup}
+
+\textbf{数据集与任务。}
+本文使用四个公开数据集进行评估，覆盖传感器时序任务和图像类任务。HARBox 作为主要边缘智能数据集，其用户级传感器记录能够体现真实客户端差异。SVHN、CIFAR-10 和 CIFAR-100 用于验证 EdgeQGFed 在图像任务上的泛化能力，其中 CIFAR-100 用于评估类别数较多时的训练稳定性。对于 HARBox，本文按照用户进行数据划分；对于 SVHN、CIFAR-10 和 CIFAR-100，本文采用 Dirichlet non-IID 划分，并重点报告 $\alpha=0.3$ 和 $\alpha=0.1$ 下的结果。
+
+\begin{table}[t]
+\centering
+\caption{数据集与默认划分设置}
+\label{tab:datasets}
+\begin{tabular}{lcccc}
+\toprule
+数据集 & 数据形态 & 类别数 & 划分方式 & 标签比例 \\
+\midrule
+HARBox & 传感器时序 & 5 & 用户级划分 & 0.1 \\
+SVHN & 图像 & 10 & Dirichlet & 0.1 \\
+CIFAR-10 & 图像 & 10 & Dirichlet & 0.1 \\
+CIFAR-100 & 图像 & 100 & Dirichlet & 0.1 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{系统配置。}
+默认系统包含一个云服务器、多个边缘服务器和若干客户端。图像数据集默认设置为 4 个边缘服务器和 128 个客户端；HARBox 使用用户级客户端划分。每轮训练中，云端根据采样策略选择部分客户端，活跃客户端将当前批次数据或特征上传到对应边缘服务器。默认链路设置采用异构 edge profile，并在后续实验中进一步改变带宽、通信预算和客户端掉线率。
+
+\textbf{对比方法。}
+本文比较 EdgeQGFed 与多种分层联邦学习基线。H-FedAvg 表示不使用图注意力和伪标签学习的基础分层 FedAvg。H-FedAvg+PL 在 H-FedAvg 上加入伪标签训练。EdgeQGFed w/o Graph 去除云端图注意力聚合，改用加权参数平均。EdgeQGFed w/o RS 将资源感知采样替换为均衡采样。EdgeQGFed w/o PL 去除伪标签损失，仅保留监督训练和云边一致性训练。完整 EdgeQGFed 同时使用资源感知客户端采样、边缘侧半监督训练和云端质量感知图注意力聚合。
+
+\textbf{评价指标。}
+学习性能使用云端准确率和边缘平均准确率衡量。系统效率使用总通信量、累计通信量、形式化轮时延、累计估计时延和 time-to-target accuracy 衡量。为解释系统行为，本文还记录选中客户端数、活跃客户端数、客户端掉线率、伪标签比例、伪标签权重和图注意力统计量。
+
+\subsection{总体性能}
+\label{subsec:overall_performance}
+
+首先在默认网络设置下比较 EdgeQGFed 与各类基线方法。该实验用于回答 EdgeQGFed 是否能够在保持通信效率的同时提升模型性能。表~\ref{tab:overall_performance} 报告云端准确率、边缘平均准确率、损失、time-to-target 和总通信量。图~\ref{fig:overall} 展示随通信轮数和累计通信量变化的收敛曲线。
+
+\begin{table*}[t]
+\centering
+\caption{默认边缘网络条件下的总体性能}
+\label{tab:overall_performance}
+\begin{tabular}{llcccccc}
+\toprule
+数据集 & 方法 & 云端准确率 & 边缘准确率 & 云端损失 & 边缘损失 & Time-to-Target & 通信量 \\
+\midrule
+HARBox & H-FedAvg & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+HARBox & H-FedAvg+PL & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+HARBox & EdgeQGFed & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+SVHN & H-FedAvg & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+SVHN & H-FedAvg+PL & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+SVHN & EdgeQGFed & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+CIFAR-10 & H-FedAvg & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+CIFAR-10 & H-FedAvg+PL & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+CIFAR-10 & EdgeQGFed & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+CIFAR-100 & H-FedAvg & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+CIFAR-100 & H-FedAvg+PL & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+CIFAR-100 & EdgeQGFed & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\textbf{绘图方式。}
+图~\ref{fig:overall}(a) 为折线图，横轴为通信轮数，纵轴为云端准确率；图~\ref{fig:overall}(b) 为折线图，横轴为累计通信量，纵轴为云端准确率；图~\ref{fig:overall}(c) 为分组柱状图，横轴为数据集，纵轴为 time-to-target，不同柱表示不同方法。
+
+\subsection{通信效率}
+\label{subsec:comm_efficiency}
+
+随后评估不同通信预算下的训练效率。该实验更贴近 INFOCOM 关注的网络系统问题，即在有限通信资源下，方法是否能够更快达到目标精度。本文改变每轮通信预算，并比较 EdgeQGFed、H-FedAvg、H-FedAvg+PL 和 EdgeQGFed w/o RS。
+
+\begin{table}[t]
+\centering
+\caption{通信预算敏感性}
+\label{tab:budget}
+\begin{tabular}{llcccc}
+\toprule
+数据集 & 预算等级 & 方法 & 云端准确率 & Time-to-Target & 预算使用率 \\
+\midrule
+HARBox & Low & H-FedAvg & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+HARBox & Low & EdgeQGFed & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+CIFAR-10 & Medium & H-FedAvg & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+CIFAR-10 & Medium & EdgeQGFed & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+CIFAR-100 & High & H-FedAvg & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+CIFAR-100 & High & EdgeQGFed & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{绘图方式。}
+主要图为折线图，横轴为累计通信量，纵轴为云端准确率。另一张折线图以每轮通信预算为横轴，以 time-to-target 为纵轴，用于展示 EdgeQGFed 是否能够更有效地利用通信资源。
+
+\subsection{时延与 Time-to-Accuracy}
+\label{subsec:latency}
+
+边缘智能系统不能只比较精度，还需要比较达到目标精度所需的系统时延。本文基于式~\eqref{eq:latency} 评估三层时延模型，分别报告端到边上传、边缘计算、边到云上传、云端聚合和云到边下发五个部分。进一步地，本文记录 time-to-target accuracy，用于衡量在相同网络条件下模型达到可用精度的速度。
+
+\begin{table}[t]
+\centering
+\caption{默认网络条件下的时延分解}
+\label{tab:latency}
+\begin{tabular}{lccccc}
+\toprule
+方法 & 端到边 & 边缘计算 & 边到云 & 云端聚合 & 云到边 \\
+\midrule
+H-FedAvg & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+EdgeQGFed w/o RS & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+EdgeQGFed & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{绘图方式。}
+时延分解采用堆叠柱状图，横轴为方法或数据集，纵轴为时延。收敛效率采用折线图，横轴为累计估计时延，纵轴为云端准确率。
+
+\subsection{链路异构与客户端移动性}
+\label{subsec:heterogeneity}
+
+本文进一步评估带宽异构和客户端不稳定参与下的鲁棒性。对于带宽异构，本文设置不同强度的 edge profile，并测试随机带宽分布；对于客户端移动性，本文改变客户端掉线概率，并可引入切换导致的额外掉线风险。该实验用于验证资源感知采样能否避开低质量链路客户端，以及图注意力聚合能否在边缘更新不完整时保持稳定。
+
+\begin{table}[t]
+\centering
+\caption{客户端掉线和移动性下的鲁棒性}
+\label{tab:dropout}
+\begin{tabular}{lcccc}
+\toprule
+掉线率 & 方法 & 云端准确率 & 活跃客户端数 & Time-to-Target \\
+\midrule
+0.0 & H-FedAvg & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+0.0 & EdgeQGFed & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+0.1 & H-FedAvg & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+0.1 & EdgeQGFed & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+0.3 & H-FedAvg & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+0.3 & EdgeQGFed & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{绘图方式。}
+带宽异构实验采用折线图，横轴为异构程度，纵轴为 time-to-target 或最终云端准确率。客户端移动性实验采用折线图，横轴为掉线率，纵轴为云端准确率。
+
+\subsection{消融实验}
+\label{subsec:ablation}
+
+为了分析各组件的作用，本文分别去除图注意力聚合、资源感知采样、伪标签学习和云边一致性训练。默认在 HARBox 和 CIFAR-10 上进行消融，必要时在 CIFAR-100 上补充难分类场景结果。预期结果是，图注意力聚合能够缓解 non-IID 下的跨边缘负迁移，资源感知采样能够降低 time-to-target，伪标签学习能够在少标签条件下提升模型性能。
+
+\begin{table}[t]
+\centering
+\caption{消融实验}
+\label{tab:ablation}
+\begin{tabular}{lcccc}
+\toprule
+变体 & 图聚合 & 资源采样 & 伪标签 & 云端准确率 \\
+\midrule
+完整 EdgeQGFed & 是 & 是 & 是 & \rule{0.8cm}{0.4pt} \\
+w/o Graph & 否 & 是 & 是 & \rule{0.8cm}{0.4pt} \\
+w/o RS & 是 & 否 & 是 & \rule{0.8cm}{0.4pt} \\
+w/o PL & 是 & 是 & 否 & \rule{0.8cm}{0.4pt} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{绘图方式。}
+消融实验采用分组柱状图，横轴为不同变体，纵轴分别为云端准确率、time-to-target 和通信开销。该图应放在总体性能和通信效率结果之后，用于解释 EdgeQGFed 的性能来源。
+
+\subsection{敏感性分析}
+\label{subsec:sensitivity}
+
+最后，本文分析 EdgeQGFed 对数据异构程度和标签比例的敏感性。对于 SVHN、CIFAR-10 和 CIFAR-100，本文改变 Dirichlet 参数 $\alpha\in\{0.1,0.3,0.5,1.0\}$。对于弱标签监督，本文改变有标签比例 $\{0.05,0.1,0.2,1.0\}$。该实验用于说明 EdgeQGFed 在更强 non-IID 和更少标签条件下是否仍然有效。
+
+\textbf{绘图方式。}
+non-IID 敏感性实验采用折线图，横轴为 Dirichlet 参数，纵轴为云端准确率。标签比例敏感性实验采用折线图，横轴为有标签比例，纵轴为云端准确率或边缘平均准确率。曲线包含 H-FedAvg、H-FedAvg+PL 和 EdgeQGFed。

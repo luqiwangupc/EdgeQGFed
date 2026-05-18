@@ -1,6 +1,7 @@
 from models.encoder import get_encoder
 from models.classifier import get_classifier
 from models.ema import EMA
+from omegaconf import OmegaConf
 
 
 def get_model(level, config):
@@ -10,14 +11,25 @@ def get_model(level, config):
     :param level: 当前的Level
     :return: Model
     """
+    dropout_rate = float(OmegaConf.select(config, 'models.dropout_rate', default=0.5))
     if level == 0:  # Cloud
-        classifier = get_classifier(name=config.models.classifier_name, encoder_name=config.models.encoder_name, dataset_name=config.datasets.name)
+        classifier = get_classifier(
+            name=config.models.classifier_name,
+            encoder_name=config.models.encoder_name,
+            dataset_name=config.datasets.name,
+            dropout_rate=dropout_rate,
+        )
         ema_classifier = EMA(classifier, decay=config.models.ema_decay, dynamic_decay=config.models.ema_dynamic_decay, algorithm=config.models.algorithm)
         del classifier
         ema_classifier.eval()
         return ema_classifier
     elif level == 1:    # Edge
-        classifier = get_classifier(name=config.models.classifier_name, encoder_name=config.models.encoder_name, dataset_name=config.datasets.name)
+        classifier = get_classifier(
+            name=config.models.classifier_name,
+            encoder_name=config.models.encoder_name,
+            dataset_name=config.datasets.name,
+            dropout_rate=dropout_rate,
+        )
         classifier.train()
         return classifier
     elif level == 2:    # End

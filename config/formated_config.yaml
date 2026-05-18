@@ -16,17 +16,17 @@
   initial_weight: 0.0
   final_weight: 0.4
   warm_mode: "gaussian"
-  consistency_confidence_gate: False
+  consistency_confidence_gate: True
   device: 0
   pseudo:
     use: True
     weight: 0.25
-    start_step: 300
-    edge_threshold: 0.5
-    cloud_threshold: 0.6
+    start_step: 500
+    edge_threshold: 0.55
+    cloud_threshold: 0.7
     temperature: 1
     weight_temperature: 0.1
-    min_weight: 0.05
+    min_weight: 0.1
 
 topology:
   num_edges: 4
@@ -57,8 +57,9 @@ datasets:
 
 models:
   encoder_name: "resnet50"
-  classifier_name: "small-mlp"
-  ema_decay: 0.1
+  classifier_name: "medium-mlp"
+  dropout_rate: 0.2
+  ema_decay: 0.5
   ema_dynamic_decay: False
   pretrain_ckpt: null
   algorithm: "AEMA"

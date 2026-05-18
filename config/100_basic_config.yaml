@@ -16,7 +16,8 @@ train:
   initial_weight: 0.0
   final_weight: 0.4
   warm_mode: "gaussian"
-  device: 2
+  device: 5
+  # consistency_confidence_gate: True
   pseudo:
     use: True
     weight: 0.2
@@ -24,8 +25,8 @@ train:
     edge_threshold: 0.35
     cloud_threshold: 0.45
     temperature: 1
-    weight_temperature: 0.1
-    min_weight: 0.05
+    weight_temperature: 0.05
+    min_weight: 0.1
 
 topology:
   num_edges: 4
@@ -55,8 +56,9 @@ datasets:
   edge_overlap_shift: 1
 
 models:
-  encoder_name: "resnet50"
-  classifier_name: "small-mlp"
+  encoder_name: "vitb16"
+  classifier_name: "medium-mlp"
+  dropout_rate: 0.3
   ema_decay: 0.1
   ema_dynamic_decay: False
   pretrain_ckpt: null
@@ -78,7 +80,7 @@ network:
   client_uplink_bandwidth_mbps: 80
   edge_uplink_bandwidth_mbps: 400
   cloud_downlink_bandwidth_mbps: 800
-  client_feature_dim: 2048
+  client_feature_dim: 768
   budget:
     include_model_sync: True
   bandwidth:

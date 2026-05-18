@@ -54,3 +54,4 @@ tree/data/
 *.out
 *.synctex.gz
 *.toc
+*.tex
