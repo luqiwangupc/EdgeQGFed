@@ -17,7 +17,7 @@ train:
   final_weight: 0.2
   warm_mode: "gaussian"
   consistency_confidence_gate: True
-  device: 0
+  device: 3
   pseudo:
     use: True
     weight: 0.1

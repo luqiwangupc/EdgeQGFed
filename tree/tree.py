@@ -7,7 +7,12 @@ import torch.optim as optim
 from omegaconf import DictConfig, ListConfig, OmegaConf
 from torch.utils.data import DataLoader
 
-from datasets.SemiDatasets import build_base_transform, build_client_registries, build_sampled_edge_dataset
+from datasets.SemiDatasets import (
+    MutableEdgeBatchSampler,
+    build_base_transform,
+    build_client_registries,
+    build_reusable_edge_batch_dataset,
+)
 from models.GetModel import get_model
 
 
@@ -97,6 +102,8 @@ class Tree:
         self.edge_to_clients: Dict[str, List[str]] = {}
         self.client_network_profile: Dict[str, Dict] = {}
         self.edge_network_profile: Dict[str, Dict] = {}
+        self.edge_batch_loaders: Dict[str, DataLoader] = {}
+        self.edge_batch_samplers: Dict[str, MutableEdgeBatchSampler] = {}
         self.config = None
 
     def find_node(self, name, node=None):
@@ -169,7 +176,29 @@ class Tree:
             self.client_registry[client_id] = entry
             self.edge_to_clients[edge_name].append(client_id)
         self.init_network_profiles(config)
+        self.init_edge_batch_loaders(config)
         print(f"Registered {len(self.client_registry)} clients across {len(self.edge_to_clients)} edges".center(80, '*'))
+
+    def init_edge_batch_loaders(self, config):
+        num_workers = int(config.datasets.edge_num_workers)
+        prefetch_factor = int(config.datasets.edge_prefetch_factor) if num_workers > 0 else None
+        persistent_workers = num_workers > 0
+        self.edge_batch_loaders = {}
+        self.edge_batch_samplers = {}
+        for edge_name, client_ids in self.edge_to_clients.items():
+            client_entries = [self.client_registry[client_id] for client_id in client_ids]
+            dataset = build_reusable_edge_batch_dataset(client_entries)
+            sampler = MutableEdgeBatchSampler(dataset.client_to_indices, config.datasets.batch_size)
+            dataloader = DataLoader(
+                dataset,
+                batch_sampler=sampler,
+                num_workers=num_workers,
+                pin_memory=config.datasets.pin_memory,
+                prefetch_factor=prefetch_factor,
+                persistent_workers=persistent_workers,
+            )
+            self.edge_batch_samplers[edge_name] = sampler
+            self.edge_batch_loaders[edge_name] = dataloader
 
     @staticmethod
     def _edge_index(edge_name):
@@ -261,19 +290,16 @@ class Tree:
             }
 
     def get_edge_batch(self, client_ids):
-        client_entries = [self.client_registry[client_id] for client_id in client_ids]
-        dataset = build_sampled_edge_dataset(client_entries, self.config.datasets.batch_size)
-        if len(dataset) == 0:
+        if not client_ids:
             return None
-        dataloader = DataLoader(
-            dataset,
-            batch_size=len(dataset),
-            shuffle=False,
-            num_workers=self.config.datasets.edge_num_workers,
-            pin_memory=self.config.datasets.pin_memory,
-            prefetch_factor=self.config.datasets.edge_prefetch_factor if self.config.datasets.edge_num_workers > 0 else None,
-            persistent_workers=False,
-        )
+        edge_name = self.client_registry[client_ids[0]]['edge_name']
+        sampler = self.edge_batch_samplers.get(edge_name)
+        dataloader = self.edge_batch_loaders.get(edge_name)
+        if sampler is None or dataloader is None:
+            raise ValueError(f'Edge batch loader for {edge_name} is not initialized')
+        sampler.set_clients(client_ids)
+        if len(sampler) == 0:
+            return None
         return next(iter(dataloader))
 
     def _estimate_client_upload_mb(self):

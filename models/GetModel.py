@@ -12,12 +12,15 @@ def get_model(level, config):
     :return: Model
     """
     dropout_rate = float(OmegaConf.select(config, 'models.dropout_rate', default=0.5))
+    input_dim = OmegaConf.select(config, 'network.client_feature_dim')
+    input_dim = int(input_dim) if input_dim is not None else None
     if level == 0:  # Cloud
         classifier = get_classifier(
             name=config.models.classifier_name,
             encoder_name=config.models.encoder_name,
             dataset_name=config.datasets.name,
             dropout_rate=dropout_rate,
+            input_dim=input_dim,
         )
         ema_classifier = EMA(classifier, decay=config.models.ema_decay, dynamic_decay=config.models.ema_dynamic_decay, algorithm=config.models.algorithm)
         del classifier
@@ -29,6 +32,7 @@ def get_model(level, config):
             encoder_name=config.models.encoder_name,
             dataset_name=config.datasets.name,
             dropout_rate=dropout_rate,
+            input_dim=input_dim,
         )
         classifier.train()
         return classifier

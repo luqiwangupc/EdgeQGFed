@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import torchvision.transforms as transforms
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Sampler
 from torchvision import datasets
 
 from datasets import split_classes
@@ -19,6 +19,8 @@ _HARBOX_ACTIVITY_LABELS = {
     'Wave': 3,
     'typing': 4,
 }
+_NETWORK_CACHE = {}
+_NETWORK_DATASETS = {'network', 'nslkdd', 'unsw_nb15'}
 
 
 def get_n_classes(name):
@@ -32,6 +34,8 @@ def get_n_classes(name):
         n_classes = 10
     elif name == 'harbox':
         n_classes = 5
+    elif name in _NETWORK_DATASETS:
+        n_classes = 2
     elif name == 'mnist':
         n_classes = 10
     else:
@@ -58,6 +62,8 @@ def get_dataset_by_name(name, train=True, transform=None):
         targets = dataset.labels
     elif name == 'harbox':
         data, targets, _ = load_harbox_dataset(train=train)
+    elif name in _NETWORK_DATASETS:
+        data, targets, _ = load_network_dataset(name=name, train=train)
     elif name == 'mnist':
         dataset = datasets.MNIST(root='./data', train=train, download=True, transform=transform)
         data = dataset.data
@@ -95,6 +101,135 @@ def _standardize_features(features):
     mean = features.mean(axis=0, keepdims=True)
     std = features.std(axis=0, keepdims=True)
     return (features - mean) / np.maximum(std, 1e-6)
+
+
+def _normalize_network_labels(labels):
+    labels = np.asarray(labels).reshape(-1)
+    if labels.dtype.kind in {'U', 'S', 'O'}:
+        normalized = []
+        for label in labels:
+            label_text = str(label).strip().lower()
+            normalized.append(0 if label_text in {'0', 'normal', 'normal.', 'benign'} else 1)
+        return np.asarray(normalized, dtype=np.int64)
+    labels = labels.astype(np.int64)
+    unique_labels = np.unique(labels)
+    if len(unique_labels) <= 2:
+        return (labels != unique_labels.min()).astype(np.int64)
+    return (labels != 0).astype(np.int64)
+
+
+def _split_network_arrays(features, labels, users, train):
+    features = _standardize_features(features)
+    labels = _normalize_network_labels(labels)
+    if users is not None:
+        users = np.asarray(users).reshape(-1)
+        unique_users = np.array(sorted(np.unique(users).tolist()))
+        default_train_users = min(max(1, int(0.8 * len(unique_users))), max(len(unique_users) - 1, 1))
+        train_user_count = int(os.environ.get('NETWORK_TRAIN_USERS', default_train_users))
+        train_user_count = min(max(train_user_count, 1), max(len(unique_users) - 1, 1))
+        train_user_set = set(unique_users[:train_user_count].tolist())
+        mask = np.array([user in train_user_set for user in users], dtype=bool)
+        if not train:
+            mask = ~mask
+        return features[mask], labels[mask], users[mask]
+
+    rng = np.random.default_rng(2026)
+    indices = np.arange(len(labels))
+    rng.shuffle(indices)
+    split = int(0.8 * len(indices))
+    selected = indices[:split] if train else indices[split:]
+    return features[selected], labels[selected], None
+
+
+def _load_network_npz(path, train, split_file=False):
+    npz = np.load(path, allow_pickle=True)
+    split_key = 'train' if train else 'test'
+    split_features = _array_from_keys(npz, [f'{split_key}_x', f'{split_key}_X', f'X_{split_key}', f'x_{split_key}', f'{split_key}_data'])
+    split_labels = _array_from_keys(npz, [f'{split_key}_y', f'{split_key}_Y', f'y_{split_key}', f'labels_{split_key}', f'{split_key}_labels'])
+    if split_features is not None and split_labels is not None:
+        split_users = _array_from_keys(npz, [f'{split_key}_users', f'{split_key}_user_ids', f'users_{split_key}', f'user_ids_{split_key}'])
+        return _standardize_features(split_features), _normalize_network_labels(split_labels), split_users
+
+    features = _array_from_keys(npz, ['x', 'X', 'data', 'features', 'samples'])
+    labels = _array_from_keys(npz, ['y', 'Y', 'label', 'labels', 'targets'])
+    users = _array_from_keys(npz, ['user', 'users', 'user_id', 'user_ids', 'host', 'hosts', 'node_id', 'node_ids'])
+    if features is None or labels is None:
+        raise ValueError(f'Network npz file {path} must contain feature and label arrays')
+    if split_file:
+        return _standardize_features(features), _normalize_network_labels(labels), users
+    return _split_network_arrays(features, labels, users, train)
+
+
+def _load_network_from_directory(root, train):
+    split_name = 'train' if train else 'test'
+    split_npz = _first_existing_path([
+        root / f'{split_name}.npz',
+        root / f'network_{split_name}.npz',
+        root / f'nslkdd_{split_name}.npz',
+        root / f'unsw_nb15_{split_name}.npz',
+    ])
+    if split_npz is not None:
+        return _load_network_npz(split_npz, train=train, split_file=True)
+
+    dataset_npz = _first_existing_path([
+        root / 'dataset.npz',
+        root / 'network.npz',
+        root / 'nslkdd.npz',
+        root / 'unsw_nb15.npz',
+    ])
+    if dataset_npz is not None:
+        return _load_network_npz(dataset_npz, train=train)
+
+    feature_file = _first_existing_path([root / 'X.npy', root / 'x.npy', root / 'features.npy', root / 'data.npy'])
+    label_file = _first_existing_path([root / 'y.npy', root / 'Y.npy', root / 'labels.npy', root / 'targets.npy'])
+    user_file = _first_existing_path([root / 'users.npy', root / 'user_ids.npy', root / 'hosts.npy', root / 'host_ids.npy'])
+    if feature_file is None or label_file is None:
+        raise FileNotFoundError(
+            f'Network-flow files are not found under {root}. Expected dataset.npz, train/test npz, '
+            'or X.npy plus y.npy. Optional users.npy can be used for user-level partition.'
+        )
+    features = np.load(feature_file, allow_pickle=True)
+    labels = np.load(label_file, allow_pickle=True)
+    users = np.load(user_file, allow_pickle=True) if user_file is not None else None
+    return _split_network_arrays(features, labels, users, train)
+
+
+def load_network_dataset(name='network', train=True):
+    root_name = 'network' if name == 'network' else name
+    root_candidates = []
+    if os.environ.get('NETWORK_ROOT'):
+        root_candidates.append(Path(os.environ['NETWORK_ROOT']))
+    root_candidates.extend([
+        Path(f'./data/{root_name}'),
+        Path('./data/network'),
+        Path('./data/nslkdd'),
+        Path('./data/NSL-KDD'),
+        Path('./data/unsw_nb15'),
+        Path('./data/UNSW-NB15'),
+    ])
+    errors = []
+    for root in root_candidates:
+        if not root.exists():
+            continue
+        cache_key = (name, str(root.resolve()), bool(train))
+        if cache_key in _NETWORK_CACHE:
+            return _NETWORK_CACHE[cache_key]
+        try:
+            dataset = _load_network_from_directory(root, train=train)
+        except FileNotFoundError as error:
+            errors.append(str(error))
+            continue
+        _NETWORK_CACHE[cache_key] = dataset
+        return dataset
+
+    searched_paths = ', '.join(str(path) for path in root_candidates)
+    detail = f' Last errors: {" | ".join(errors)}' if errors else ''
+    raise FileNotFoundError(
+        f'Network-flow data is not available. Searched: {searched_paths}. '
+        'Put preprocessed dataset.npz or X.npy/y.npy under data/nslkdd, '
+        'or set NETWORK_ROOT to the preprocessed network-flow directory.'
+        f'{detail}'
+    )
 
 
 def _split_harbox_arrays(features, labels, users, train):
@@ -287,11 +422,14 @@ def get_dataset_user_ids(name, train=True):
     if name == 'harbox':
         _, _, users = load_harbox_dataset(train=train)
         return users
+    if name in _NETWORK_DATASETS:
+        _, _, users = load_network_dataset(name=name, train=train)
+        return users
     return None
 
 
 def _prepare_image(image, data_name):
-    if data_name == 'harbox':
+    if data_name == 'harbox' or data_name in _NETWORK_DATASETS:
         return torch.as_tensor(image, dtype=torch.float32).view(-1)
     if isinstance(image, torch.Tensor):
         image = image.numpy()
@@ -304,7 +442,7 @@ def _prepare_image(image, data_name):
 
 
 def build_base_transform(data_name, image_size=224, normalize='imagenet'):
-    if data_name == 'harbox':
+    if data_name == 'harbox' or data_name in _NETWORK_DATASETS:
         return None
     if normalize == 'imagenet':
         mean = [0.485, 0.456, 0.406]
@@ -340,10 +478,27 @@ def _harbox_strong_augment(x):
     return augmented.reshape(-1)
 
 
+def _network_weak_augment(x):
+    return x + 0.002 * torch.randn_like(x)
+
+
+def _network_strong_augment(x):
+    augmented = x + 0.01 * torch.randn_like(x)
+    if augmented.numel() > 0:
+        keep_mask = torch.rand_like(augmented) > 0.05
+        augmented = augmented * keep_mask
+    return augmented
+
+
 def _build_augmentations(data_name='cifar10'):
     if data_name == 'harbox':
         weak_transform = transforms.Lambda(_harbox_weak_augment)
         strong_transform = transforms.Lambda(_harbox_strong_augment)
+        return weak_transform, strong_transform
+
+    if data_name in _NETWORK_DATASETS:
+        weak_transform = transforms.Lambda(_network_weak_augment)
+        strong_transform = transforms.Lambda(_network_strong_augment)
         return weak_transform, strong_transform
 
     if data_name == 'svhn':
@@ -626,6 +781,74 @@ def build_sampled_edge_dataset(client_entries, batch_size_per_client):
     return SampledEdgeBatchDataset(client_entries, batch_size_per_client)
 
 
+class ReusableEdgeBatchDataset(Dataset):
+    def __init__(self, client_entries):
+        self.records = []
+        self.client_to_indices = {}
+        for client_entry in client_entries:
+            client_id = client_entry['client_id']
+            self.client_to_indices[client_id] = []
+            for local_pos in range(len(client_entry['indices'])):
+                self.client_to_indices[client_id].append(len(self.records))
+                self.records.append((client_entry, int(local_pos)))
+
+    def __len__(self):
+        return len(self.records)
+
+    def __getitem__(self, index):
+        client_entry, local_pos = self.records[index]
+        real_index = client_entry['indices'][local_pos]
+        img = client_entry['data'][real_index]
+        label = int(client_entry['targets'][real_index])
+        is_labeled = bool(client_entry['labeled_mask'][local_pos])
+        img = _prepare_image(img, client_entry['data_name'])
+        if client_entry['transform'] is not None:
+            img = client_entry['transform'](img)
+        weak_img = client_entry['weak_transform'](img)
+        strong_img = client_entry['strong_transform'](img)
+        return {
+            'img': img,
+            'label': label,
+            'is_labeled': is_labeled,
+            'weak_img': weak_img,
+            'strong_img': strong_img,
+        }
+
+
+class MutableEdgeBatchSampler(Sampler):
+    def __init__(self, client_to_indices, batch_size_per_client):
+        self.client_to_indices = client_to_indices
+        self.batch_size_per_client = int(batch_size_per_client)
+        self.client_ids = []
+
+    def set_clients(self, client_ids):
+        self.client_ids = [
+            client_id for client_id in client_ids
+            if client_id in self.client_to_indices and self.client_to_indices[client_id]
+        ]
+
+    def __iter__(self):
+        batch_indices = []
+        for client_id in self.client_ids:
+            record_indices = self.client_to_indices[client_id]
+            replace = len(record_indices) < self.batch_size_per_client
+            sampled_positions = np.random.choice(
+                len(record_indices),
+                size=self.batch_size_per_client,
+                replace=replace,
+            )
+            batch_indices.extend(record_indices[int(pos)] for pos in sampled_positions)
+        if batch_indices:
+            yield batch_indices
+
+    def __len__(self):
+        return 1 if self.client_ids else 0
+
+
+def build_reusable_edge_batch_dataset(client_entries):
+    return ReusableEdgeBatchDataset(client_entries)
+
+
 def _build_client_entry(data, targets, indices, labeled_ratio, train, transform, data_name, edge_id, client_id):
     labeled_mask = torch.zeros(len(indices), dtype=torch.bool)
     if train:
@@ -672,7 +895,7 @@ def build_client_registries(
     data, targets = get_dataset_by_name(data_name, train=train, transform=None)
     num_classes = get_n_classes(data_name)
 
-    if data_name == 'harbox' and partition_mode == 'user':
+    if data_name in {'harbox', 'network', 'nslkdd', 'unsw_nb15'} and partition_mode == 'user':
         user_ids = get_dataset_user_ids(data_name, train=train)
         if user_ids is None:
             client_indices = _iid_partition(len(data), num_clients)

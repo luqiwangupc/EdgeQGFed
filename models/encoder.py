@@ -17,6 +17,24 @@ from torchvision.models import (
 from utils.singleton import singleton
 
 
+def freeze_feature_extractor(module: nn.Module) -> nn.Module:
+    for param in module.parameters():
+        param.requires_grad = False
+    module.eval()
+    return module
+
+
+class FrozenEncoder(nn.Module):
+    def train(self, mode: bool = True):
+        super().train(False)
+        if hasattr(self, 'encoder'):
+            self.encoder.eval()
+        return self
+
+    def encode(self, x):
+        return self.forward(x)
+
+
 def get_mae_encoder(name, in_channels=3, ckpt_path=None):
     model = get_encoder_by_name(name)
     print(f'Use MAE pretrained encoder {name}, in_channels={in_channels}')
@@ -79,120 +97,120 @@ class IdentityEncoder(nn.Module):
 
 
 @singleton
-class ResNet50Encoder(nn.Module):
+class ResNet50Encoder(FrozenEncoder):
     def __init__(self):
         super().__init__()
         self.encoder = models.resnet50(weights=ResNet50_Weights.IMAGENET1K_V1)
         self.encoder.fc = nn.Identity()
+        freeze_feature_extractor(self.encoder)
 
     def forward(self, x):
+        self.encoder.eval()
         with torch.no_grad():
             return self.encoder(x)
 
-    def encode(self, x):
-        return self.forward(x)
-
 
 @singleton
-class ResNet34Encoder(nn.Module):
+class ResNet34Encoder(FrozenEncoder):
     def __init__(self):
         super().__init__()
         self.encoder = models.resnet34(weights=ResNet34_Weights.IMAGENET1K_V1)
         self.encoder.fc = nn.Identity()
+        freeze_feature_extractor(self.encoder)
 
     def forward(self, x):
+        self.encoder.eval()
         with torch.no_grad():
             return self.encoder(x)
 
-    def encode(self, x):
-        return self.forward(x)
-
 
 @singleton
-class Vgg16Encoder(nn.Module):
+class Vgg16Encoder(FrozenEncoder):
     def __init__(self):
         super().__init__()
         self.encoder = models.vgg16(weights=VGG16_Weights.IMAGENET1K_V1)
-        self.encoder.classifier[-1] = nn.Identity()
+        self.encoder.classifier = nn.Sequential(
+            self.encoder.classifier[0],
+            self.encoder.classifier[1],
+            self.encoder.classifier[3],
+            self.encoder.classifier[4],
+        )
+        freeze_feature_extractor(self.encoder)
 
     def forward(self, x):
+        self.encoder.eval()
         with torch.no_grad():
             return self.encoder(x)
 
-    def encode(self, x):
-        return self.forward(x)
-
 
 @singleton
-class Mobile3SmallEncoder(nn.Module):
+class Mobile3SmallEncoder(FrozenEncoder):
     def __init__(self):
         super().__init__()
         self.encoder = models.mobilenet_v3_small(weights=MobileNet_V3_Small_Weights.IMAGENET1K_V1)
-        self.encoder.classifier[-1] = nn.Identity()
+        self.encoder.classifier = nn.Sequential(
+            self.encoder.classifier[0],
+            self.encoder.classifier[1],
+        )
+        freeze_feature_extractor(self.encoder)
 
     def forward(self, x):
+        self.encoder.eval()
         with torch.no_grad():
             return self.encoder(x)
 
-    def encode(self, x):
-        return self.forward(x)
-
 
 @singleton
-class Efficient2SmallEncoder(nn.Module):
+class Efficient2SmallEncoder(FrozenEncoder):
     def __init__(self):
         super().__init__()
         self.encoder = models.efficientnet_v2_s(weights=EfficientNet_V2_S_Weights.IMAGENET1K_V1)
-        self.encoder.classifier[-1] = nn.Identity()
+        self.encoder.classifier = nn.Identity()
+        freeze_feature_extractor(self.encoder)
 
     def forward(self, x):
+        self.encoder.eval()
         with torch.no_grad():
             return self.encoder(x)
 
-    def encode(self, x):
-        return self.forward(x)
-
 
 @singleton
-class Efficientb2Encoder(nn.Module):
+class Efficientb2Encoder(FrozenEncoder):
     def __init__(self):
         super().__init__()
         self.encoder = models.efficientnet_b2(weights=EfficientNet_B2_Weights.IMAGENET1K_V1)
-        self.encoder.classifier[-1] = nn.Identity()
+        self.encoder.classifier = nn.Identity()
+        freeze_feature_extractor(self.encoder)
 
     def forward(self, x):
+        self.encoder.eval()
         with torch.no_grad():
             return self.encoder(x)
 
-    def encode(self, x):
-        return self.forward(x)
-
 
 @singleton
-class ViTb16Encoder(nn.Module):
+class ViTb16Encoder(FrozenEncoder):
     def __init__(self):
         super().__init__()
         self.encoder = models.vit_b_16(weights=models.ViT_B_16_Weights.IMAGENET1K_V1)
         self.encoder.heads = nn.Identity()
+        freeze_feature_extractor(self.encoder)
 
     def forward(self, x):
+        self.encoder.eval()
         with torch.no_grad():
             return self.encoder(x)
 
-    def encode(self, x):
-        return self.forward(x)
-
 
 @singleton
-class ViTb32Encoder(nn.Module):
+class ViTb32Encoder(FrozenEncoder):
     def __init__(self):
         super().__init__()
         self.encoder = models.vit_b_32(weights=models.ViT_B_32_Weights.IMAGENET1K_V1)
         self.encoder.heads = nn.Identity()
+        freeze_feature_extractor(self.encoder)
 
     def forward(self, x):
+        self.encoder.eval()
         with torch.no_grad():
             return self.encoder(x)
-
-    def encode(self, x):
-        return self.forward(x)

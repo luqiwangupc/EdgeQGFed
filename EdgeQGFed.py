@@ -393,11 +393,11 @@ def edge_run_loop(
         if batch is None:
             continue
 
-        client_inputs = batch['img'].to(device)
-        client_labels = batch['label'].to(device)
-        client_is_labeled = batch['is_labeled'].to(device).bool()
-        client_weak_input = batch['weak_img'].to(device)
-        client_strong_input = batch['strong_img'].to(device)
+        client_inputs = batch['img'].to(device, non_blocking=True)
+        client_labels = batch['label'].to(device, non_blocking=True)
+        client_is_labeled = batch['is_labeled'].to(device, non_blocking=True).bool()
+        client_weak_input = batch['weak_img'].to(device, non_blocking=True)
+        client_strong_input = batch['strong_img'].to(device, non_blocking=True)
 
         if random.random() < config.models.attack_rate:
             client_inputs = torch.randn_like(client_inputs, device=device)
@@ -799,7 +799,7 @@ if __name__ == '__main__':
     wandb.init(
         project='EdgeQGFed',
         dir='logs',
-        name=f"EdgeQGFed-old-config-{config.datasets.name}-{datetime.datetime.now().strftime('%Y%m%d-%H%M')}",
+        name=f"EdgeQGFed-new-{config.models.encoder_name}-{config.datasets.name}-{datetime.datetime.now().strftime('%Y%m%d-%H%M')}",
         config=OmegaConf.to_container(config),
         job_type='train',
     )

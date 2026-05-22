@@ -1,69 +1,69 @@
 train:
-  learning_rate: 3e-4
-  total_steps: 3000
+  learning_rate: 8.0e-4
+  total_steps: 4000
   log_step: 20
-  evaluate_step: 100
-  ema_update_step: 50
+  evaluate_step: 50
+  ema_update_step: 10
   ckpt_save_path: "checkpoints"
-  ckpt_save_name: "best_edgeqgfed_cifar100_l0.1.pth"
+  ckpt_save_name: "best_edgeqgfed_nslkdd_l0.1.pth"
   class_fn: "CE"
   consis_fn: "MSE"
   optimizer: "AdamW"
   differential:
     use: False
     epsilon: 10
-  warm_up_steps: 2500
+  warm_up_steps: 1000
   initial_weight: 0.0
-  final_weight: 0.4
+  final_weight: 0.2
   warm_mode: "gaussian"
-  device: 4
-  # consistency_confidence_gate: True
+  consistency_confidence_gate: True
+  device: 1
   pseudo:
     use: True
-    weight: 0.2
-    start_step: 1000
-    edge_threshold: 0.35
-    cloud_threshold: 0.45
-    temperature: 1
-    weight_temperature: 0.05
-    min_weight: 0.1
+    weight: 0.1
+    start_step: 800
+    edge_threshold: 0.75
+    cloud_threshold: 0.80
+    temperature: 1.0
+    weight_temperature: 0.1
+    min_weight: 0.2
 
 topology:
-  num_edges: 4
-  num_clients: 128
-  clients_per_round: 32
-  edges_per_round: 4
+  num_edges: 5
+  num_clients: 100
+  clients_per_round: 40
+  edges_per_round: 5
   client_sample_mode: "resource_aware"
   assignment: "round_robin"
   client_drop_rate: 0.0
 
 datasets:
-  name: "cifar100"
-  normalize: "imagenet"
-  batch_size: 64
+  name: "nslkdd"
+  normalize: "none"
+  batch_size: 32
   labeled_ratio: 0.1
-  edge_num_workers: 2
+  edge_num_workers: 0
   edge_prefetch_factor: 1
-  eval_num_workers: 2
-  pin_memory: True
+  eval_num_workers: 0
+  pin_memory: False
   distributed: "nonIID"
   partition_mode: "client_dirichlet"
   partition_alpha: 0.5
-  min_client_size: 16
+  min_client_size: 4
   edge_dirichlet_alpha: 0.3
   client_dirichlet_alpha: 1.0
-  edge_overlap_size: 5
+  edge_overlap_size: 2
   edge_overlap_shift: 1
 
 models:
-  encoder_name: "efficientv2s"
-  classifier_name: "small-mlp"
-  dropout_rate: 0.3
+  encoder_name: "identity"
+  classifier_name: "network-mlp"
+  dropout_rate: 0.1
   ema_decay: 0.1
   ema_dynamic_decay: False
   pretrain_ckpt: null
   algorithm: "AEMA"
-  aggregation_mode: "auto"
+  aggregation_mode: "state_dict"
   attack_rate: 0.0
   graph:
     use: True
@@ -76,35 +76,34 @@ models:
     min_attention: 1.0e-4
 
 network:
-  round_comm_budget_mb: 1200
-  client_uplink_bandwidth_mbps: 80
-  edge_uplink_bandwidth_mbps: 400
-  cloud_downlink_bandwidth_mbps: 800
-  client_feature_dim: 768
+  round_comm_budget_mb: 200
+  client_uplink_bandwidth_mbps: 20
+  edge_uplink_bandwidth_mbps: 200
+  cloud_downlink_bandwidth_mbps: 400
   budget:
     include_model_sync: True
   bandwidth:
     mode: "edge_profile"
-    client_uplink_by_edge_mbps: [40, 60, 80, 120]
-    edge_uplink_by_edge_mbps: [200, 300, 400, 600]
-    cloud_downlink_by_edge_mbps: [400, 600, 800, 1000]
+    client_uplink_by_edge_mbps: [5, 10, 20, 30, 50]
+    edge_uplink_by_edge_mbps: [80, 120, 200, 300, 400]
+    cloud_downlink_by_edge_mbps: [150, 250, 400, 500, 600]
     client_distribution:
       type: "uniform"
-      min_mbps: 10
-      max_mbps: 120
+      min_mbps: 2
+      max_mbps: 50
     edge_distribution:
       type: "lognormal"
-      median_mbps: 400
+      median_mbps: 200
       sigma: 0.35
-      min_mbps: 100
-      max_mbps: 1000
+      min_mbps: 50
+      max_mbps: 500
     cloud_downlink_distribution:
       type: "uniform"
-      min_mbps: 300
-      max_mbps: 1200
+      min_mbps: 100
+      max_mbps: 600
   mobility:
     mode: "static"
-    edge_drop_rates: [0.02, 0.05, 0.10, 0.15]
+    edge_drop_rates: [0.02, 0.05, 0.10, 0.15, 0.20]
     handoff_probability: 0.05
     handoff_drop_boost: 0.20
     drop_jitter: 0.03
@@ -118,15 +117,16 @@ network:
     bandwidth_weight: 0.25
     availability_weight: 0.15
     latency_cost_weight: 1.0
-  max_parallel_uploads_per_edge: 8
+  max_parallel_uploads_per_edge: 10
   client_view_count: 3
-  client_input_channels: 3
-  client_image_size: 224
+  client_input_channels: 1
+  client_image_size: 1
+  client_feature_dim: 122
   bytes_per_value: 4
-  target_accuracy: 40.0
+  target_accuracy: 85.0
 
 pretrain:
   epochs: 20
-  img_size: 224
+  img_size: 32
   decoder_dim: 1024
   mask_ratio: 0.75

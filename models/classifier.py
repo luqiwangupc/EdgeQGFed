@@ -3,11 +3,25 @@ import torch.nn as nn
 from einops import repeat
 
 
-def get_classifier(name: str, encoder_name: str, dataset_name: str, dropout_rate: float = 0.5) -> nn.Module:
+ENCODER_FEATURE_DIMS = {
+    'resnet50': 2048,
+    'resnet34': 512,
+    'vgg16': 4096,
+    'mobilenetv3s': 1024,
+    'efficientv2s': 1280,
+    'efficientb2': 1408,
+    'vitb16': 768,
+    'vitb32': 768,
+}
+
+
+def get_classifier(name: str, encoder_name: str, dataset_name: str, dropout_rate: float = 0.5, input_dim: int = None) -> nn.Module:
     if dataset_name == 'cifar100':
         num_classes = 100
     elif dataset_name == 'harbox':
         num_classes = 5
+    elif dataset_name in {'network', 'nslkdd', 'unsw_nb15'}:
+        num_classes = 2
     else:
         num_classes = 10
 
@@ -17,15 +31,23 @@ def get_classifier(name: str, encoder_name: str, dataset_name: str, dropout_rate
         return SensorCNNClassifier(input_dim=900, num_classes=num_classes)
     if name in {'har-mlp', 'sensor-mlp'}:
         return SensorMLPClassifier(input_dim=900, num_classes=num_classes)
+    if name in {'network-mlp', 'tabular-mlp', 'flow-mlp'}:
+        return SensorMLPClassifier(
+            input_dim=input_dim or 122,
+            num_classes=num_classes,
+            dropout_rate=dropout_rate,
+        )
 
-    if encoder_name in {'vitb16', 'vitb32'}:
-        input_dim = 768
-    elif dataset_name == 'harbox' and encoder_name == 'identity':
+    if dataset_name == 'harbox' and encoder_name == 'identity':
         input_dim = 900
+    elif dataset_name in {'network', 'nslkdd', 'unsw_nb15'} and encoder_name == 'identity':
+        input_dim = input_dim or 122
     elif encoder_name == 'identity':
         raise ValueError("classifier 'small-cnn' is required when encoder_name is 'identity'")
+    elif encoder_name in ENCODER_FEATURE_DIMS:
+        input_dim = ENCODER_FEATURE_DIMS[encoder_name]
     else:
-        input_dim = 2048
+        raise ValueError(f'Unknown encoder feature dim for {encoder_name}')
 
     if name == 'small-transformer':
         return SmallClassifier(input_dim=input_dim, num_classes=num_classes)

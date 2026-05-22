@@ -42,8 +42,8 @@ datasets:
   normalize: "imagenet"
   batch_size: 64
   labeled_ratio: 0.1
-  edge_num_workers: 4
-  edge_prefetch_factor: 2
+  edge_num_workers: 2
+  edge_prefetch_factor: 1
   eval_num_workers: 2
   pin_memory: True
   distributed: "nonIID"
@@ -56,8 +56,8 @@ datasets:
   edge_overlap_shift: 1
 
 models:
-  encoder_name: "resnet50"
-  classifier_name: "medium-mlp"
+  encoder_name: "efficientv2s"
+  classifier_name: "small-mlp"
   dropout_rate: 0.2
   ema_decay: 0.5
   ema_dynamic_decay: False
