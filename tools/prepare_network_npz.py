@@ -28,9 +28,60 @@ def _label_index(row):
     return len(row) - 1
 
 
+NSLKDD_ATTACK_GROUPS = {
+    'normal': 0,
+    'normal.': 0,
+    'dos': 1,
+    'back': 1,
+    'land': 1,
+    'neptune': 1,
+    'pod': 1,
+    'smurf': 1,
+    'teardrop': 1,
+    'apache2': 1,
+    'udpstorm': 1,
+    'processtable': 1,
+    'mailbomb': 1,
+    'worm': 1,
+    'probe': 2,
+    'satan': 2,
+    'ipsweep': 2,
+    'nmap': 2,
+    'portsweep': 2,
+    'mscan': 2,
+    'saint': 2,
+    'r2l': 3,
+    'guess_passwd': 3,
+    'ftp_write': 3,
+    'imap': 3,
+    'phf': 3,
+    'multihop': 3,
+    'warezmaster': 3,
+    'warezclient': 3,
+    'spy': 3,
+    'xlock': 3,
+    'xsnoop': 3,
+    'snmpguess': 3,
+    'snmpgetattack': 3,
+    'httptunnel': 3,
+    'sendmail': 3,
+    'named': 3,
+    'u2r': 4,
+    'buffer_overflow': 4,
+    'loadmodule': 4,
+    'rootkit': 4,
+    'perl': 4,
+    'sqlattack': 4,
+    'xterm': 4,
+    'ps': 4,
+}
+
+
 def _encode_label(label):
     label = str(label).strip().lower()
-    return 0 if label in {'0', 'normal', 'normal.', 'benign'} else 1
+    if label in NSLKDD_ATTACK_GROUPS:
+        return NSLKDD_ATTACK_GROUPS[label]
+    raise ValueError(f'Unknown NSL-KDD label: {label}')
 
 
 def _ignored_columns(row, label_col):
@@ -40,12 +91,15 @@ def _ignored_columns(row, label_col):
     return ignored
 
 
-def _build_features(rows, label_col):
+def _feature_rows(rows, label_col):
     feature_rows = []
     for row in rows:
         ignored = _ignored_columns(row, label_col)
         feature_rows.append([value for idx, value in enumerate(row) if idx not in ignored])
+    return feature_rows
 
+
+def _fit_feature_schema(feature_rows):
     num_cols = len(feature_rows[0])
     categorical_values = {}
     numeric_cols = []
@@ -55,7 +109,11 @@ def _build_features(rows, label_col):
             numeric_cols.append(col)
         else:
             categorical_values[col] = sorted(set(values))
+    return numeric_cols, categorical_values
 
+
+def _transform_features(feature_rows, schema):
+    numeric_cols, categorical_values = schema
     encoded_rows = []
     for row in feature_rows:
         encoded = []
@@ -71,9 +129,17 @@ def _build_features(rows, label_col):
     return np.asarray(encoded_rows, dtype=np.float32)
 
 
+def _build_features(rows, label_col, schema=None):
+    feature_rows = _feature_rows(rows, label_col)
+    if schema is None:
+        schema = _fit_feature_schema(feature_rows)
+    return _transform_features(feature_rows, schema), schema
+
+
 def main():
-    parser = argparse.ArgumentParser(description='Prepare network-flow CSV/TXT data as EdgeQGFed npz.')
+    parser = argparse.ArgumentParser(description='Prepare NSL-KDD CSV/TXT data as 5-class EdgeQGFed npz.')
     parser.add_argument('--input', required=True, help='Path to raw NSL-KDD/flow CSV or TXT file.')
+    parser.add_argument('--test', default=None, help='Optional raw NSL-KDD test CSV/TXT file.')
     parser.add_argument('--output', default='data/nslkdd/dataset.npz', help='Output npz path.')
     parser.add_argument('--users-column', type=int, default=-1, help='Optional user/host column index. Default: disabled.')
     args = parser.parse_args()
@@ -83,13 +149,22 @@ def main():
         raise ValueError(f'No rows found in {args.input}')
 
     label_col = _label_index(rows[0])
-    X = _build_features(rows, label_col)
+    test_rows = _read_rows(args.test) if args.test else []
+    all_rows_for_schema = rows + test_rows
+    all_label_col = _label_index(all_rows_for_schema[0])
+    _, schema = _build_features(all_rows_for_schema, all_label_col)
+    X, _ = _build_features(rows, label_col, schema=schema)
     y = np.asarray([_encode_label(row[label_col]) for row in rows], dtype=np.int64)
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if args.users_column >= 0:
+    if test_rows:
+        test_label_col = _label_index(test_rows[0])
+        test_X, _ = _build_features(test_rows, test_label_col, schema=schema)
+        test_y = np.asarray([_encode_label(row[test_label_col]) for row in test_rows], dtype=np.int64)
+        np.savez_compressed(output_path, train_X=X, train_y=y, test_X=test_X, test_y=test_y)
+    elif args.users_column >= 0:
         users = np.asarray([row[args.users_column] for row in rows])
         np.savez_compressed(output_path, X=X, y=y, users=users)
     else:

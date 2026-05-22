@@ -5,7 +5,7 @@ train:
   evaluate_step: 50
   ema_update_step: 10
   ckpt_save_path: "checkpoints"
-  ckpt_save_name: "best_edgeqgfed_nslkdd_l0.1.pth"
+  ckpt_save_name: "best_edgeqgfed_nslkdd_5class_l0.1.pth"
   class_fn: "CE"
   consis_fn: "MSE"
   optimizer: "AdamW"
@@ -123,7 +123,7 @@ network:
   client_image_size: 1
   client_feature_dim: 122
   bytes_per_value: 4
-  target_accuracy: 85.0
+  target_accuracy: 75.0
 
 pretrain:
   epochs: 20

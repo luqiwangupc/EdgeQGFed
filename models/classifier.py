@@ -20,7 +20,9 @@ def get_classifier(name: str, encoder_name: str, dataset_name: str, dropout_rate
         num_classes = 100
     elif dataset_name == 'harbox':
         num_classes = 5
-    elif dataset_name in {'network', 'nslkdd', 'unsw_nb15'}:
+    elif dataset_name in {'network', 'nslkdd'}:
+        num_classes = 5
+    elif dataset_name == 'unsw_nb15':
         num_classes = 2
     else:
         num_classes = 10

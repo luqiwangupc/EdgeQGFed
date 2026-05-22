@@ -21,6 +21,54 @@ _HARBOX_ACTIVITY_LABELS = {
 }
 _NETWORK_CACHE = {}
 _NETWORK_DATASETS = {'network', 'nslkdd', 'unsw_nb15'}
+_NSLKDD_ATTACK_GROUPS = {
+    'normal': 0,
+    'normal.': 0,
+    '0': 0,
+    'dos': 1,
+    'back': 1,
+    'land': 1,
+    'neptune': 1,
+    'pod': 1,
+    'smurf': 1,
+    'teardrop': 1,
+    'apache2': 1,
+    'udpstorm': 1,
+    'processtable': 1,
+    'mailbomb': 1,
+    'worm': 1,
+    'probe': 2,
+    'satan': 2,
+    'ipsweep': 2,
+    'nmap': 2,
+    'portsweep': 2,
+    'mscan': 2,
+    'saint': 2,
+    'r2l': 3,
+    'guess_passwd': 3,
+    'ftp_write': 3,
+    'imap': 3,
+    'phf': 3,
+    'multihop': 3,
+    'warezmaster': 3,
+    'warezclient': 3,
+    'spy': 3,
+    'xlock': 3,
+    'xsnoop': 3,
+    'snmpguess': 3,
+    'snmpgetattack': 3,
+    'httptunnel': 3,
+    'sendmail': 3,
+    'named': 3,
+    'u2r': 4,
+    'buffer_overflow': 4,
+    'loadmodule': 4,
+    'rootkit': 4,
+    'perl': 4,
+    'sqlattack': 4,
+    'xterm': 4,
+    'ps': 4,
+}
 
 
 def get_n_classes(name):
@@ -34,7 +82,9 @@ def get_n_classes(name):
         n_classes = 10
     elif name == 'harbox':
         n_classes = 5
-    elif name in _NETWORK_DATASETS:
+    elif name in {'network', 'nslkdd'}:
+        n_classes = 5
+    elif name == 'unsw_nb15':
         n_classes = 2
     elif name == 'mnist':
         n_classes = 10
@@ -109,13 +159,22 @@ def _normalize_network_labels(labels):
         normalized = []
         for label in labels:
             label_text = str(label).strip().lower()
-            normalized.append(0 if label_text in {'0', 'normal', 'normal.', 'benign'} else 1)
+            if label_text in _NSLKDD_ATTACK_GROUPS:
+                normalized.append(_NSLKDD_ATTACK_GROUPS[label_text])
+            elif label_text in {'benign', '1'}:
+                normalized.append(0)
+            else:
+                normalized.append(1)
         return np.asarray(normalized, dtype=np.int64)
     labels = labels.astype(np.int64)
     unique_labels = np.unique(labels)
+    if unique_labels.min() == 1 and unique_labels.max() <= 5:
+        return labels - 1
+    if unique_labels.min() >= 0 and unique_labels.max() <= 4:
+        return labels
     if len(unique_labels) <= 2:
         return (labels != unique_labels.min()).astype(np.int64)
-    return (labels != 0).astype(np.int64)
+    return labels
 
 
 def _split_network_arrays(features, labels, users, train):
