@@ -1,32 +1,41 @@
 train:
   learning_rate: 8.0e-4
-  total_steps: 4000
+  total_steps: 3000
   log_step: 20
   evaluate_step: 50
   ema_update_step: 10
   ckpt_save_path: "checkpoints"
   ckpt_save_name: "best_edgeqgfed_nslkdd_5class_l0.1.pth"
-  class_fn: "CE"
+  class_fn: "weighted_focal"
   consis_fn: "MSE"
   optimizer: "AdamW"
+  class_balance:
+    mode: "auto"
+    labeled_only: True
+    exponent: 0.65
+    smoothing: 1.0
+    min_weight: 0.35
+    max_weight: 15.0
+    focal_gamma: 2.0
+    class_multipliers: [0.8, 0.8, 1.0, 3.0, 1.5]
   differential:
     use: False
     epsilon: 10
-  warm_up_steps: 1000
+  warm_up_steps: 1500
   initial_weight: 0.0
-  final_weight: 0.2
+  final_weight: 0.1
   warm_mode: "gaussian"
   consistency_confidence_gate: True
-  device: 1
+  device: 2
   pseudo:
     use: True
-    weight: 0.1
-    start_step: 800
-    edge_threshold: 0.75
-    cloud_threshold: 0.80
+    weight: 0.03
+    start_step: 2200
+    edge_threshold: 0.97
+    cloud_threshold: 0.97
     temperature: 1.0
-    weight_temperature: 0.1
-    min_weight: 0.2
+    weight_temperature: 0.05
+    min_weight: 0.6
 
 topology:
   num_edges: 5
@@ -42,6 +51,10 @@ datasets:
   normalize: "none"
   batch_size: 32
   labeled_ratio: 0.1
+  label_sampling: "stratified"
+  min_labeled_per_client: 1
+  balanced_labeled_batch_fraction: 0.35
+  class_sampling_weights: [0.7, 0.8, 1.0, 4.0, 2.0]
   edge_num_workers: 0
   edge_prefetch_factor: 1
   eval_num_workers: 0

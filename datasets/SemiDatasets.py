@@ -844,11 +844,18 @@ class ReusableEdgeBatchDataset(Dataset):
     def __init__(self, client_entries):
         self.records = []
         self.client_to_indices = {}
+        self.client_to_labeled_indices_by_class = {}
         for client_entry in client_entries:
             client_id = client_entry['client_id']
             self.client_to_indices[client_id] = []
+            self.client_to_labeled_indices_by_class[client_id] = {}
             for local_pos in range(len(client_entry['indices'])):
-                self.client_to_indices[client_id].append(len(self.records))
+                record_index = len(self.records)
+                self.client_to_indices[client_id].append(record_index)
+                if bool(client_entry['labeled_mask'][local_pos]):
+                    real_index = client_entry['indices'][local_pos]
+                    class_id = int(client_entry['targets'][real_index])
+                    self.client_to_labeled_indices_by_class[client_id].setdefault(class_id, []).append(record_index)
                 self.records.append((client_entry, int(local_pos)))
 
     def __len__(self):
@@ -875,9 +882,21 @@ class ReusableEdgeBatchDataset(Dataset):
 
 
 class MutableEdgeBatchSampler(Sampler):
-    def __init__(self, client_to_indices, batch_size_per_client):
+    def __init__(
+        self,
+        client_to_indices,
+        batch_size_per_client,
+        client_to_labeled_indices_by_class=None,
+        labeled_fraction=0.0,
+        class_sampling_weights=None,
+    ):
         self.client_to_indices = client_to_indices
         self.batch_size_per_client = int(batch_size_per_client)
+        self.client_to_labeled_indices_by_class = client_to_labeled_indices_by_class or {}
+        self.labeled_fraction = float(labeled_fraction)
+        self.class_sampling_weights = None
+        if class_sampling_weights is not None:
+            self.class_sampling_weights = np.asarray(list(class_sampling_weights), dtype=np.float64)
         self.client_ids = []
 
     def set_clients(self, client_ids):
@@ -890,12 +909,15 @@ class MutableEdgeBatchSampler(Sampler):
         batch_indices = []
         for client_id in self.client_ids:
             record_indices = self.client_to_indices[client_id]
-            replace = len(record_indices) < self.batch_size_per_client
+            labeled_indices = self._sample_labeled_indices(client_id)
+            remaining_size = max(self.batch_size_per_client - len(labeled_indices), 0)
+            replace = len(record_indices) < remaining_size
             sampled_positions = np.random.choice(
                 len(record_indices),
-                size=self.batch_size_per_client,
+                size=remaining_size,
                 replace=replace,
-            )
+            ) if remaining_size > 0 else []
+            batch_indices.extend(labeled_indices)
             batch_indices.extend(record_indices[int(pos)] for pos in sampled_positions)
         if batch_indices:
             yield batch_indices
@@ -903,17 +925,86 @@ class MutableEdgeBatchSampler(Sampler):
     def __len__(self):
         return 1 if self.client_ids else 0
 
+    def _sample_labeled_indices(self, client_id):
+        if self.labeled_fraction <= 0:
+            return []
+        labeled_by_class = self.client_to_labeled_indices_by_class.get(client_id, {})
+        available_classes = [class_id for class_id, indices in labeled_by_class.items() if indices]
+        if not available_classes:
+            return []
+
+        sample_size = int(round(self.batch_size_per_client * self.labeled_fraction))
+        sample_size = min(max(sample_size, 0), self.batch_size_per_client)
+        if sample_size == 0:
+            return []
+
+        probs = None
+        if self.class_sampling_weights is not None:
+            weights = np.array([
+                self.class_sampling_weights[class_id] if class_id < len(self.class_sampling_weights) else 1.0
+                for class_id in available_classes
+            ], dtype=np.float64)
+            if weights.sum() > 0:
+                probs = weights / weights.sum()
+
+        sampled = []
+        sampled_classes = np.random.choice(available_classes, size=sample_size, replace=True, p=probs)
+        for class_id in sampled_classes:
+            class_indices = labeled_by_class[int(class_id)]
+            sampled.append(int(np.random.choice(class_indices)))
+        return sampled
+
 
 def build_reusable_edge_batch_dataset(client_entries):
     return ReusableEdgeBatchDataset(client_entries)
 
 
-def _build_client_entry(data, targets, indices, labeled_ratio, train, transform, data_name, edge_id, client_id):
+def _select_labeled_positions(targets, indices, labeled_count, mode):
+    if labeled_count <= 0:
+        return torch.empty(0, dtype=torch.long)
+    if str(mode).lower() != 'stratified':
+        return torch.randperm(len(indices))[:labeled_count]
+
+    local_labels = np.asarray(targets)[indices]
+    selected = []
+    class_ids, class_counts = np.unique(local_labels, return_counts=True)
+    for class_id in class_ids[np.argsort(class_counts)]:
+        positions = np.where(local_labels == class_id)[0]
+        if len(positions) == 0:
+            continue
+        selected.append(int(np.random.choice(positions)))
+        if len(selected) >= labeled_count:
+            break
+
+    if len(selected) < labeled_count:
+        remaining = np.setdiff1d(np.arange(len(indices)), np.array(selected, dtype=np.int64), assume_unique=False)
+        if len(remaining) > 0:
+            fill_count = min(labeled_count - len(selected), len(remaining))
+            selected.extend(np.random.choice(remaining, size=fill_count, replace=False).astype(np.int64).tolist())
+    return torch.tensor(selected[:labeled_count], dtype=torch.long)
+
+
+def _build_client_entry(
+    data,
+    targets,
+    indices,
+    labeled_ratio,
+    train,
+    transform,
+    data_name,
+    edge_id,
+    client_id,
+    label_sampling='random',
+    min_labeled_per_client=0,
+):
     labeled_mask = torch.zeros(len(indices), dtype=torch.bool)
     if train:
         labeled_count = int(len(indices) * labeled_ratio)
+        if labeled_ratio > 0:
+            labeled_count = max(labeled_count, int(min_labeled_per_client))
+        labeled_count = min(labeled_count, len(indices))
         if labeled_count > 0:
-            labeled_indices = torch.randperm(len(indices))[:labeled_count]
+            labeled_indices = _select_labeled_positions(targets, indices, labeled_count, label_sampling)
             labeled_mask[labeled_indices] = True
     else:
         labeled_mask[:] = True
@@ -950,6 +1041,8 @@ def build_client_registries(
     client_dirichlet_alpha=1.0,
     edge_overlap_size=5,
     edge_overlap_shift=1,
+    label_sampling='random',
+    min_labeled_per_client=0,
 ):
     data, targets = get_dataset_by_name(data_name, train=train, transform=None)
     num_classes = get_n_classes(data_name)
@@ -999,6 +1092,8 @@ def build_client_registries(
                 data_name=data_name,
                 edge_id=edge_assignments[client_id],
                 client_id=client_id,
+                label_sampling=label_sampling,
+                min_labeled_per_client=min_labeled_per_client,
             )
         )
     return client_entries

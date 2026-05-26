@@ -166,6 +166,8 @@ class Tree:
             client_dirichlet_alpha=config.datasets.client_dirichlet_alpha,
             edge_overlap_size=config.datasets.edge_overlap_size,
             edge_overlap_shift=config.datasets.edge_overlap_shift,
+            label_sampling=OmegaConf.select(config, 'datasets.label_sampling', default='random'),
+            min_labeled_per_client=OmegaConf.select(config, 'datasets.min_labeled_per_client', default=0),
         )
         self.client_registry = {}
         self.edge_to_clients = {f'Edge{edge_id}': [] for edge_id in range(topology.num_edges)}
@@ -183,12 +185,20 @@ class Tree:
         num_workers = int(config.datasets.edge_num_workers)
         prefetch_factor = int(config.datasets.edge_prefetch_factor) if num_workers > 0 else None
         persistent_workers = num_workers > 0
+        labeled_fraction = float(OmegaConf.select(config, 'datasets.balanced_labeled_batch_fraction', default=0.0))
+        class_sampling_weights = OmegaConf.select(config, 'datasets.class_sampling_weights', default=None)
         self.edge_batch_loaders = {}
         self.edge_batch_samplers = {}
         for edge_name, client_ids in self.edge_to_clients.items():
             client_entries = [self.client_registry[client_id] for client_id in client_ids]
             dataset = build_reusable_edge_batch_dataset(client_entries)
-            sampler = MutableEdgeBatchSampler(dataset.client_to_indices, config.datasets.batch_size)
+            sampler = MutableEdgeBatchSampler(
+                dataset.client_to_indices,
+                config.datasets.batch_size,
+                client_to_labeled_indices_by_class=dataset.client_to_labeled_indices_by_class,
+                labeled_fraction=labeled_fraction,
+                class_sampling_weights=class_sampling_weights,
+            )
             dataloader = DataLoader(
                 dataset,
                 batch_sampler=sampler,

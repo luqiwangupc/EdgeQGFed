@@ -146,7 +146,52 @@ def parallel_upload_makespan_seconds(payloads_mb, bandwidths_mbps, max_parallel)
     return max(slots)
 
 
-def evaluate_edges(encoded_model, tree, val_loader, criterion, device):
+def _use_nslkdd_metrics(config):
+    return str(OmegaConf.select(config, 'datasets.name', default='')).lower() == 'nslkdd'
+
+
+def build_class_weights_from_labeled_clients(tree, num_classes, config, device):
+    mode = str(OmegaConf.select(config, 'train.class_balance.mode', default='none')).lower()
+    if mode in {'none', 'off', 'false'}:
+        return None
+
+    counts = torch.zeros(num_classes, dtype=torch.float32)
+    use_labeled_only = bool(OmegaConf.select(config, 'train.class_balance.labeled_only', default=True))
+    for entry in tree.client_registry.values():
+        indices = torch.as_tensor(entry['indices'], dtype=torch.long)
+        if use_labeled_only:
+            mask = entry['labeled_mask'].bool()
+            indices = indices[mask]
+        if indices.numel() == 0:
+            continue
+        labels = torch.as_tensor(entry['targets'][indices.numpy()], dtype=torch.long)
+        counts += torch.bincount(labels, minlength=num_classes).float()[:num_classes]
+
+    if counts.sum().item() <= 0:
+        return None
+
+    smoothing = float(OmegaConf.select(config, 'train.class_balance.smoothing', default=1.0))
+    exponent = float(OmegaConf.select(config, 'train.class_balance.exponent', default=0.5))
+    min_weight = float(OmegaConf.select(config, 'train.class_balance.min_weight', default=0.25))
+    max_weight = float(OmegaConf.select(config, 'train.class_balance.max_weight', default=8.0))
+    weights = (counts.sum() / max(num_classes, 1)) / (counts + smoothing)
+    weights = weights.clamp_min(1e-6).pow(exponent)
+    weights = weights / weights.mean().clamp_min(1e-6)
+    class_multipliers = OmegaConf.select(config, 'train.class_balance.class_multipliers', default=None)
+    if class_multipliers is not None:
+        multipliers = torch.ones(num_classes, dtype=torch.float32)
+        for class_id, multiplier in enumerate(class_multipliers):
+            if class_id < num_classes:
+                multipliers[class_id] = float(multiplier)
+        weights = weights * multipliers
+        weights = weights / weights.mean().clamp_min(1e-6)
+    weights = weights.clamp(min=min_weight, max=max_weight)
+    print(f'Class counts for weighted loss: {[int(value) for value in counts.tolist()]}')
+    print(f'Class weights for weighted loss: {[round(float(value), 4) for value in weights.tolist()]}')
+    return weights.to(device)
+
+
+def evaluate_edges(encoded_model, tree, val_loader, criterion, device, extra_metrics=False):
     edge_metrics = []
     for edge in tree.root.children:
         metrics = evaluate(
@@ -155,6 +200,7 @@ def evaluate_edges(encoded_model, tree, val_loader, criterion, device):
             val_loader=val_loader,
             criterion=criterion,
             device=device,
+            extra_metrics=extra_metrics,
         )
         edge_metrics.append(metrics)
 
@@ -163,7 +209,12 @@ def evaluate_edges(encoded_model, tree, val_loader, criterion, device):
 
     edge_avg_loss = sum(metric['val_loss'] for metric in edge_metrics) / len(edge_metrics)
     edge_avg_acc = sum(metric['val_accuracy'] for metric in edge_metrics) / len(edge_metrics)
-    return {'edge_avg_loss': edge_avg_loss, 'edge_avg_acc': edge_avg_acc}
+    result = {'edge_avg_loss': edge_avg_loss, 'edge_avg_acc': edge_avg_acc}
+    metric_keys = set().union(*(metric.keys() for metric in edge_metrics))
+    for key in metric_keys:
+        if key.startswith('val_') and key not in {'val_loss', 'val_accuracy'}:
+            result[f'edge_avg_{key[4:]}'] = sum(metric.get(key, 0.0) for metric in edge_metrics) / len(edge_metrics)
+    return result
 
 
 def compact_metric_dict(metrics):
@@ -255,8 +306,9 @@ def print_best_metrics(best_metrics):
         print(f"Best Checkpoint Path: {best_metrics['checkpoint_path']}")
 
 
-def build_eval_log_metrics(val_metrics, edge_metrics, info_metrics):
-    return compact_metric_dict({
+def build_eval_log_metrics(val_metrics, edge_metrics, info_metrics, config):
+    class_names = ['normal', 'dos', 'probe', 'r2l', 'u2r']
+    log_metrics = {
         'cloud_accuracy': val_metrics.get('val_accuracy'),
         'cloud_loss': val_metrics.get('val_loss'),
         'edge_avg_accuracy': edge_metrics.get('edge_avg_acc'),
@@ -265,7 +317,24 @@ def build_eval_log_metrics(val_metrics, edge_metrics, info_metrics):
         'cumulative_estimated_latency_s': info_metrics.get('cumulative_estimated_latency_s'),
         'time_to_target_accuracy_s': info_metrics.get('time_to_target_accuracy_s'),
         'wall_time_to_target_accuracy_s': info_metrics.get('wall_time_to_target_accuracy_s'),
-    })
+    }
+    if _use_nslkdd_metrics(config):
+        log_metrics.update({
+            'cloud_macro_f1': val_metrics.get('val_macro_f1'),
+            'cloud_weighted_f1': val_metrics.get('val_weighted_f1'),
+            'cloud_macro_recall': val_metrics.get('val_macro_recall'),
+            'edge_avg_macro_f1': edge_metrics.get('edge_avg_macro_f1'),
+            'edge_avg_weighted_f1': edge_metrics.get('edge_avg_weighted_f1'),
+            'edge_avg_macro_recall': edge_metrics.get('edge_avg_macro_recall'),
+        })
+        for class_id, class_name in enumerate(class_names):
+            recall_key = f'val_recall_class_{class_id}'
+            edge_recall_key = f'edge_avg_recall_class_{class_id}'
+            if recall_key in val_metrics:
+                log_metrics[f'cloud_recall_{class_name}'] = val_metrics.get(recall_key)
+            if edge_recall_key in edge_metrics:
+                log_metrics[f'edge_avg_recall_{class_name}'] = edge_metrics.get(edge_recall_key)
+    return compact_metric_dict(log_metrics)
 
 
 def evaluate_and_log(
@@ -290,6 +359,7 @@ def evaluate_and_log(
         val_loader=valloader,
         criterion=classification_criterion,
         device=device,
+        extra_metrics=_use_nslkdd_metrics(config),
     )
     edge_val_metrics = evaluate_edges(
         encoded_model=encoder_model,
@@ -297,6 +367,7 @@ def evaluate_and_log(
         val_loader=valloader,
         criterion=classification_criterion,
         device=device,
+        extra_metrics=_use_nslkdd_metrics(config),
     )
     if first_target_time is None and val_metrics['val_accuracy'] >= target_accuracy:
         first_target_time = cumulative_estimated_latency_s
@@ -310,11 +381,14 @@ def evaluate_and_log(
     print('\nValidation Metrics:')
     print(f"Cloud Loss: {val_metrics['val_loss']:.4f}")
     print(f"Cloud Accuracy: {val_metrics['val_accuracy']:.2f}%")
+    if _use_nslkdd_metrics(config) and 'val_macro_f1' in val_metrics:
+        print(f"Cloud Macro-F1: {val_metrics['val_macro_f1']:.4f}")
+        print(f"Cloud Macro Recall: {val_metrics['val_macro_recall']:.4f}")
     print(f"Edge Avg Accuracy: {edge_val_metrics['edge_avg_acc']:.2f}%")
     if first_target_time is not None:
         print(f"Time to Target Accuracy (s): {first_target_time:.3f}")
         print(f"Wall Time to Target Accuracy (s): {first_target_wall_time:.3f}")
-    wandb.log(build_eval_log_metrics(val_metrics, edge_val_metrics, info_metrics), step=current_steps)
+    wandb.log(build_eval_log_metrics(val_metrics, edge_val_metrics, info_metrics, config), step=current_steps)
 
     best_accuracy = float(best_metrics.get('cloud_accuracy', 0.0))
     if val_metrics['val_accuracy'] > best_accuracy:
@@ -593,15 +667,21 @@ def train(config):
     encoder_model = get_encoder(config).to(device)
     graph_aggregator = HierarchicalGraphAggregator(config)
 
-    classification_criterion, consistency_criterion = get_loss_function(
-        config.train.class_fn,
-        config.train.consis_fn,
-        num_class=get_n_classes(config.datasets.name),
-    )
-
     tree = create_tree(config)
     tree.move_to_device(device)
     sync_edge_models_from_cloud(tree)
+
+    num_classes = get_n_classes(config.datasets.name)
+    class_weights = build_class_weights_from_labeled_clients(tree, num_classes, config, device)
+    classification_criterion, consistency_criterion = get_loss_function(
+        config.train.class_fn,
+        config.train.consis_fn,
+        num_class=num_classes,
+        class_weights=class_weights,
+        focal_gamma=OmegaConf.select(config, 'train.class_balance.focal_gamma', default=2.0),
+    )
+    classification_criterion = classification_criterion.to(device)
+    consistency_criterion = consistency_criterion.to(device)
 
     current_steps = 0
     best_metrics = {'cloud_accuracy': 0.0}
@@ -799,7 +879,7 @@ if __name__ == '__main__':
     wandb.init(
         project='EdgeQGFed',
         dir='logs',
-        name=f"EdgeQGFed-new-{config.models.encoder_name}-{config.datasets.name}-{datetime.datetime.now().strftime('%Y%m%d-%H%M')}",
+        name=f"EdgeQGFed-d0.1-{config.models.encoder_name}-{config.datasets.name}-{datetime.datetime.now().strftime('%Y%m%d-%H%M')}",
         config=OmegaConf.to_container(config),
         job_type='train',
     )
