@@ -5,7 +5,7 @@
   evaluate_step: 100
   ema_update_step: 50
   ckpt_save_path: "checkpoints"
-  ckpt_save_name: "best_edgeqgfed_cifar10_l0.1.pth"
+  ckpt_save_name: "best_edgeqgfed_cifar10_d0.1.pth"
   class_fn: "CE"
   consis_fn: "MSE"
   optimizer: "AdamW"
@@ -17,7 +17,7 @@
   final_weight: 0.4
   warm_mode: "gaussian"
   consistency_confidence_gate: True
-  device: 0
+  device: 5
   pseudo:
     use: True
     weight: 0.25
@@ -39,6 +39,8 @@ topology:
 
 datasets:
   name: 'cifar10'
+  seed: 0
+  val_ratio: 0.1
   normalize: "imagenet"
   batch_size: 64
   labeled_ratio: 0.1
@@ -48,7 +50,7 @@ datasets:
   pin_memory: True
   distributed: "nonIID"
   partition_mode: "client_dirichlet"
-  partition_alpha: 0.5
+  partition_alpha: 0.1
   min_client_size: 16
   edge_dirichlet_alpha: 0.3
   client_dirichlet_alpha: 1.0
@@ -123,7 +125,7 @@ network:
     latency_cost_weight: 1.0
   max_parallel_uploads_per_edge: 8
   client_view_count: 3
-  client_feature_dim: 2048
+  client_feature_dim: 1280
   client_input_channels: 3
   client_image_size: 224
   bytes_per_value: 4

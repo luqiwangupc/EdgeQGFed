@@ -5,13 +5,14 @@ import random
 import time
 from collections import OrderedDict
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 import wandb
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader
 
-from datasets.SemiDatasets import FedSemiDataset, build_base_transform, get_n_classes
+from datasets.SemiDatasets import FedSemiDataset, build_base_transform, get_n_classes, make_train_val_indices
 from models.encoder import get_encoder
 from models.graph_aggregator import HierarchicalGraphAggregator
 from tree.tree import clone_aggregation_tensors, create_tree
@@ -38,6 +39,14 @@ def to_number(value):
     if isinstance(value, torch.Tensor):
         return float(value.detach().item())
     return float(value)
+
+
+def set_random_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
 def compute_consistency_loss(consistency_criterion, student_probs, teacher_probs, criterion_name):
@@ -306,6 +315,50 @@ def print_best_metrics(best_metrics):
         print(f"Best Checkpoint Path: {best_metrics['checkpoint_path']}")
 
 
+def _state_dict_to_cpu(state_dict):
+    return {
+        key: value.detach().cpu().clone() if isinstance(value, torch.Tensor) else value
+        for key, value in state_dict.items()
+    }
+
+
+def save_tree_checkpoint(tree, path, step, val_metrics, edge_metrics):
+    checkpoint = {
+        'step': step,
+        'cloud_model': _state_dict_to_cpu(tree.root.model.model.state_dict()),
+        'edge_models': {
+            edge.name: _state_dict_to_cpu(edge.model.state_dict())
+            for edge in tree.root.children
+        },
+        'val_metrics': val_metrics,
+        'edge_val_metrics': edge_metrics,
+    }
+    torch.save(checkpoint, path)
+
+
+def load_tree_checkpoint(tree, path, device):
+    checkpoint = torch.load(path, map_location=device)
+    if isinstance(checkpoint, dict) and 'cloud_model' in checkpoint:
+        tree.root.model.model.load_state_dict(checkpoint['cloud_model'])
+        edge_states = checkpoint.get('edge_models', {})
+        for edge in tree.root.children:
+            if edge.name in edge_states:
+                edge.model.load_state_dict(edge_states[edge.name])
+        return checkpoint
+
+    tree.root.model.model.load_state_dict(checkpoint)
+    sync_edge_models_from_cloud(tree)
+    return {'cloud_model': checkpoint, 'edge_models': {}}
+
+
+def print_test_metrics(title, val_metrics, edge_metrics):
+    print(f'\n{title}:')
+    print(f"Cloud Loss: {val_metrics['val_loss']:.4f}")
+    print(f"Cloud Accuracy: {val_metrics['val_accuracy']:.2f}%")
+    print(f"Edge Avg Loss: {edge_metrics['edge_avg_loss']:.4f}")
+    print(f"Edge Avg Accuracy: {edge_metrics['edge_avg_acc']:.2f}%")
+
+
 def build_eval_log_metrics(val_metrics, edge_metrics, info_metrics, config):
     class_names = ['normal', 'dos', 'probe', 'r2l', 'u2r']
     log_metrics = {
@@ -395,7 +448,7 @@ def evaluate_and_log(
         ckpt_dir = os.path.join(config.train.ckpt_save_path, config.datasets.name)
         ckpt_path = os.path.join(ckpt_dir, config.train.ckpt_save_name)
         os.makedirs(ckpt_dir, exist_ok=True)
-        tree.root.model.save(ckpt_path)
+        save_tree_checkpoint(tree, ckpt_path, current_steps, val_metrics, edge_val_metrics)
         best_metrics.update({
             'cloud_accuracy': val_metrics['val_accuracy'],
             'cloud_loss': val_metrics['val_loss'],
@@ -646,6 +699,7 @@ def edge_run_loop(
 
 
 def train(config):
+    set_random_seed(int(OmegaConf.select(config, 'datasets.seed', default=0)))
     device = torch.device(f"cuda:{config.train.device}" if torch.cuda.is_available() else 'cpu')
     if torch.cuda.is_available():
         torch.cuda.set_device(config.train.device)
@@ -656,9 +710,30 @@ def train(config):
         normalize=OmegaConf.select(config, 'datasets.normalize', default='imagenet'),
     )
 
-    valset = FedSemiDataset(labeled_ratio=1, train=False, transform=transform, data_name=config.datasets.name)
+    val_ratio = float(OmegaConf.select(config, 'datasets.val_ratio', default=0.0))
+    split_seed = int(OmegaConf.select(config, 'datasets.seed', default=0))
+    if val_ratio > 0:
+        _, val_indices = make_train_val_indices(config.datasets.name, val_ratio=val_ratio, seed=split_seed)
+        valset = FedSemiDataset(
+            labeled_ratio=1,
+            train=True,
+            transform=transform,
+            data_name=config.datasets.name,
+            indices=val_indices,
+        )
+    else:
+        print('Warning: datasets.val_ratio <= 0, using the official test split for validation/model selection.')
+        valset = FedSemiDataset(labeled_ratio=1, train=False, transform=transform, data_name=config.datasets.name)
     valloader = DataLoader(
         valset,
+        batch_size=config.datasets.batch_size,
+        shuffle=False,
+        num_workers=config.datasets.eval_num_workers,
+        pin_memory=config.datasets.pin_memory,
+    )
+    testset = FedSemiDataset(labeled_ratio=1, train=False, transform=transform, data_name=config.datasets.name)
+    testloader = DataLoader(
+        testset,
         batch_size=config.datasets.batch_size,
         shuffle=False,
         num_workers=config.datasets.eval_num_workers,
@@ -867,6 +942,25 @@ def train(config):
         current_steps += 1
 
     print_best_metrics(best_metrics)
+    if best_metrics.get('checkpoint_path') is not None:
+        load_tree_checkpoint(tree, best_metrics['checkpoint_path'], device)
+        best_test_metrics = evaluate(
+            encoded_model=encoder_model,
+            model=tree.root.model,
+            val_loader=testloader,
+            criterion=classification_criterion,
+            device=device,
+            extra_metrics=_use_nslkdd_metrics(config),
+        )
+        best_edge_test_metrics = evaluate_edges(
+            encoded_model=encoder_model,
+            tree=tree,
+            val_loader=testloader,
+            criterion=classification_criterion,
+            device=device,
+            extra_metrics=_use_nslkdd_metrics(config),
+        )
+        print_test_metrics('Final Test Metrics at Best Validation Checkpoint', best_test_metrics, best_edge_test_metrics)
 
 
 if __name__ == '__main__':

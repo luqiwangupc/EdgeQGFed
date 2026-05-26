@@ -12,8 +12,10 @@ from datasets.SemiDatasets import (
     build_base_transform,
     build_client_registries,
     build_reusable_edge_batch_dataset,
+    make_train_val_indices,
 )
 from models.GetModel import get_model
+from models.classifier import ENCODER_FEATURE_DIMS
 
 
 def resolve_aggregation_mode(config):
@@ -150,6 +152,12 @@ class Tree:
             normalize=OmegaConf.select(config, 'datasets.normalize', default='imagenet'),
         )
         topology = config.topology
+        val_ratio = float(OmegaConf.select(config, 'datasets.val_ratio', default=0.0))
+        seed = int(OmegaConf.select(config, 'datasets.seed', default=0))
+        train_indices = None
+        if val_ratio > 0:
+            train_indices, val_indices = make_train_val_indices(config.datasets.name, val_ratio=val_ratio, seed=seed)
+            print(f'Train/val split: {len(train_indices)} train samples, {len(val_indices)} validation samples'.center(80, '*'))
         client_entries = build_client_registries(
             data_name=config.datasets.name,
             num_clients=topology.num_clients,
@@ -168,6 +176,7 @@ class Tree:
             edge_overlap_shift=config.datasets.edge_overlap_shift,
             label_sampling=OmegaConf.select(config, 'datasets.label_sampling', default='random'),
             min_labeled_per_client=OmegaConf.select(config, 'datasets.min_labeled_per_client', default=0),
+            include_indices=train_indices,
         )
         self.client_registry = {}
         self.edge_to_clients = {f'Edge{edge_id}': [] for edge_id in range(topology.num_edges)}
@@ -316,7 +325,8 @@ class Tree:
         views = int(self.config.network.client_view_count)
         bytes_per_value = int(self.config.network.bytes_per_value)
         batch_size = int(self.config.datasets.batch_size)
-        feature_dim = OmegaConf.select(self.config, 'network.client_feature_dim')
+        encoder_name = str(OmegaConf.select(self.config, 'models.encoder_name', default=''))
+        feature_dim = ENCODER_FEATURE_DIMS.get(encoder_name, OmegaConf.select(self.config, 'network.client_feature_dim'))
         if feature_dim is not None:
             total_bytes = batch_size * int(feature_dim) * bytes_per_value * views
         else:

@@ -123,6 +123,55 @@ def get_dataset_by_name(name, train=True, transform=None):
     return data, targets
 
 
+def _subset_data_targets(data, targets, indices):
+    indices = np.asarray(indices, dtype=np.int64)
+    if isinstance(data, torch.Tensor):
+        subset_data = data[torch.as_tensor(indices, dtype=torch.long)]
+    else:
+        subset_data = np.asarray(data)[indices]
+    if isinstance(targets, torch.Tensor):
+        subset_targets = targets[torch.as_tensor(indices, dtype=torch.long)]
+    else:
+        subset_targets = np.asarray(targets)[indices]
+    return subset_data, subset_targets
+
+
+def make_train_val_indices(data_name, val_ratio=0.0, seed=0):
+    data, targets = get_dataset_by_name(data_name, train=True, transform=None)
+    num_samples = len(data)
+    val_ratio = float(val_ratio)
+    if val_ratio <= 0:
+        return np.arange(num_samples, dtype=np.int64), np.empty(0, dtype=np.int64)
+    if val_ratio >= 1:
+        raise ValueError('datasets.val_ratio must be in [0, 1)')
+
+    rng = np.random.default_rng(int(seed))
+    targets = np.asarray(targets)
+    train_indices = []
+    val_indices = []
+
+    if targets.ndim == 1 and len(targets) == num_samples:
+        for class_id in np.unique(targets):
+            class_indices = np.where(targets == class_id)[0]
+            rng.shuffle(class_indices)
+            val_count = int(round(len(class_indices) * val_ratio))
+            val_count = min(max(val_count, 1), len(class_indices) - 1) if len(class_indices) > 1 else 0
+            val_indices.extend(class_indices[:val_count].tolist())
+            train_indices.extend(class_indices[val_count:].tolist())
+    else:
+        all_indices = np.arange(num_samples)
+        rng.shuffle(all_indices)
+        val_count = int(round(num_samples * val_ratio))
+        val_indices = all_indices[:val_count].tolist()
+        train_indices = all_indices[val_count:].tolist()
+
+    train_indices = np.asarray(train_indices, dtype=np.int64)
+    val_indices = np.asarray(val_indices, dtype=np.int64)
+    rng.shuffle(train_indices)
+    rng.shuffle(val_indices)
+    return train_indices, val_indices
+
+
 def _first_existing_path(paths):
     for path in paths:
         if path.exists():
@@ -759,12 +808,14 @@ class ImgDataset(Dataset):
 
 
 class FedSemiDataset(Dataset):
-    def __init__(self, labeled_ratio, train=True, transform=None, data_name='cifar10', accept_classes=None):
+    def __init__(self, labeled_ratio, train=True, transform=None, data_name='cifar10', accept_classes=None, indices=None):
         self.transform = transform
         self.data_name = data_name
         self.weak_transform, self.strong_transform = _build_augmentations(data_name)
 
         self.data, self.targets = get_dataset_by_name(data_name, train, transform)
+        if indices is not None:
+            self.data, self.targets = _subset_data_targets(self.data, self.targets, indices)
         n_classes = get_n_classes(data_name)
 
         if accept_classes is not None:
@@ -1043,12 +1094,17 @@ def build_client_registries(
     edge_overlap_shift=1,
     label_sampling='random',
     min_labeled_per_client=0,
+    include_indices=None,
 ):
     data, targets = get_dataset_by_name(data_name, train=train, transform=None)
+    if include_indices is not None:
+        data, targets = _subset_data_targets(data, targets, include_indices)
     num_classes = get_n_classes(data_name)
 
     if data_name in {'harbox', 'network', 'nslkdd', 'unsw_nb15'} and partition_mode == 'user':
         user_ids = get_dataset_user_ids(data_name, train=train)
+        if user_ids is not None and include_indices is not None:
+            user_ids = np.asarray(user_ids)[np.asarray(include_indices, dtype=np.int64)]
         if user_ids is None:
             client_indices = _iid_partition(len(data), num_clients)
         else:
