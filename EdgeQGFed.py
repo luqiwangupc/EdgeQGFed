@@ -258,6 +258,18 @@ def build_train_log_metrics(metrics, config):
         'cumulative_comm_mb': metrics.get('cumulative_comm_mb'),
         'cumulative_estimated_latency_s': metrics.get('cumulative_estimated_latency_s'),
         'round_wall_clock_s': metrics.get('round_wall_clock_s'),
+        'terminal_edge_upload_latency_s': metrics.get('terminal_edge_upload_latency_s'),
+        'edge_compute_latency_s': metrics.get('edge_compute_latency_s'),
+        'edge_cloud_upload_latency_s': metrics.get('edge_cloud_upload_latency_s'),
+        'cloud_aggregation_latency_s': metrics.get('cloud_aggregation_latency_s'),
+        'cloud_edge_downlink_latency_s': metrics.get('cloud_edge_downlink_latency_s'),
+        'estimated_network_latency_s': metrics.get('estimated_network_latency_s'),
+        'formal_round_latency_s': metrics.get('formal_round_latency_s'),
+        'amortized_edge_cloud_upload_latency_s': metrics.get('amortized_edge_cloud_upload_latency_s'),
+        'amortized_cloud_aggregation_latency_s': metrics.get('amortized_cloud_aggregation_latency_s'),
+        'amortized_cloud_edge_downlink_latency_s': metrics.get('amortized_cloud_edge_downlink_latency_s'),
+        'amortized_formal_round_latency_s': metrics.get('amortized_formal_round_latency_s'),
+        'cloud_sync_active': metrics.get('cloud_sync_active'),
         'edge_total_loss': metrics.get('total_loss'),
         'edge_class_loss': metrics.get('avg_class_loss'),
         'active_edges': metrics.get('active_edges'),
@@ -293,7 +305,6 @@ def build_train_log_metrics(metrics, config):
     if _is_dynamic_network_experiment(config):
         log_metrics.update({
             'total_comm_mb': metrics.get('total_comm_mb'),
-            'formal_round_latency_s': metrics.get('formal_round_latency_s'),
             'samples_per_estimated_second': metrics.get('samples_per_estimated_second'),
             'budget_used_ratio': metrics.get('budget_used_ratio'),
             'client_drop_ratio': metrics.get('client_drop_ratio'),
@@ -767,6 +778,9 @@ def train(config):
     cumulative_estimated_latency_s = 0.0
     cumulative_comm_mb = 0.0
     final_train_metrics = {}
+    last_edge_cloud_upload_latency_s = 0.0
+    last_cloud_aggregation_latency_s = 0.0
+    last_cloud_edge_downlink_latency_s = 0.0
     best_metrics, first_target_time, first_target_wall_time = evaluate_and_log(
         encoder_model=encoder_model,
         tree=tree,
@@ -792,7 +806,9 @@ def train(config):
             final_weight=config.train.final_weight,
             mode=config.train.warm_mode,
         )
-        sampled_clients = tree.sample_clients(config)
+        sync_this_round = current_steps % config.train.ema_update_step == 0
+        include_sync_in_budget = bool(OmegaConf.select(config, 'network.budget.include_model_sync', default=True))
+        sampled_clients = tree.sample_clients(config, include_model_sync=include_sync_in_budget and sync_this_round)
         edge_summaries, train_metrics, network_state = edge_run_loop(
             tree=tree,
             sampled_clients=sampled_clients,
@@ -803,7 +819,7 @@ def train(config):
             classification_criterion=classification_criterion,
             consistency_criterion=consistency_criterion,
             device=device,
-            update=current_steps % config.train.ema_update_step == 0,
+            update=sync_this_round,
         )
 
         train_metrics['consistency_weight'] = consistency_weight
@@ -875,6 +891,22 @@ def train(config):
             + cloud_aggregation_latency_s
             + cloud_edge_downlink_latency_s
         )
+        sync_interval = max(int(config.train.ema_update_step), 1)
+        cloud_sync_active = 1.0 if edge_summaries is not None else 0.0
+        if edge_summaries is not None:
+            last_edge_cloud_upload_latency_s = edge_cloud_upload_latency_s
+            last_cloud_aggregation_latency_s = cloud_aggregation_latency_s
+            last_cloud_edge_downlink_latency_s = cloud_edge_downlink_latency_s
+        amortized_edge_cloud_upload_latency_s = last_edge_cloud_upload_latency_s / sync_interval
+        amortized_cloud_aggregation_latency_s = last_cloud_aggregation_latency_s / sync_interval
+        amortized_cloud_edge_downlink_latency_s = last_cloud_edge_downlink_latency_s / sync_interval
+        amortized_formal_round_latency_s = (
+            terminal_edge_upload_latency_s
+            + edge_compute_latency_s
+            + amortized_edge_cloud_upload_latency_s
+            + amortized_cloud_aggregation_latency_s
+            + amortized_cloud_edge_downlink_latency_s
+        )
         cumulative_estimated_latency_s += formal_round_latency_s
         total_comm_mb = client_upload_mb + edge_upload_mb + cloud_downlink_mb
         cumulative_comm_mb += total_comm_mb
@@ -897,6 +929,11 @@ def train(config):
             'cloud_downlink_latency_s': cloud_edge_downlink_latency_s,
             'estimated_network_latency_s': estimated_network_latency_s,
             'formal_round_latency_s': formal_round_latency_s,
+            'amortized_edge_cloud_upload_latency_s': amortized_edge_cloud_upload_latency_s,
+            'amortized_cloud_aggregation_latency_s': amortized_cloud_aggregation_latency_s,
+            'amortized_cloud_edge_downlink_latency_s': amortized_cloud_edge_downlink_latency_s,
+            'amortized_formal_round_latency_s': amortized_formal_round_latency_s,
+            'cloud_sync_active': cloud_sync_active,
             'cumulative_estimated_latency_s': cumulative_estimated_latency_s,
             'round_wall_clock_s': round_wall_clock_s,
             'throughput_samples_per_s': processed_samples / max(round_wall_clock_s, 1e-8),
@@ -918,8 +955,17 @@ def train(config):
             print(f"Client Drop Ratio: {train_metrics['client_drop_ratio']:.4f}")
             print(f"Total Comm (MB): {train_metrics['total_comm_mb']:.2f}")
             print(f"Round Wall Time (s): {train_metrics['round_wall_clock_s']:.3f}")
+            print(f"Terminal-Edge Upload Latency (s): {train_metrics['terminal_edge_upload_latency_s']:.3f}")
+            print(f"Edge Compute Latency (s): {train_metrics['edge_compute_latency_s']:.3f}")
+            print(f"Edge-Cloud Upload Latency (s): {train_metrics['edge_cloud_upload_latency_s']:.3f}")
+            print(f"Cloud Aggregation Latency (s): {train_metrics['cloud_aggregation_latency_s']:.3f}")
+            print(f"Cloud-Edge Downlink Latency (s): {train_metrics['cloud_edge_downlink_latency_s']:.3f}")
             print(f"Estimated Network Latency (s): {train_metrics['estimated_network_latency_s']:.3f}")
             print(f"Formal Round Latency (s): {train_metrics['formal_round_latency_s']:.3f}")
+            print(f"Amortized Edge-Cloud Upload Latency (s): {train_metrics['amortized_edge_cloud_upload_latency_s']:.3f}")
+            print(f"Amortized Cloud Aggregation Latency (s): {train_metrics['amortized_cloud_aggregation_latency_s']:.3f}")
+            print(f"Amortized Cloud-Edge Downlink Latency (s): {train_metrics['amortized_cloud_edge_downlink_latency_s']:.3f}")
+            print(f"Amortized Formal Round Latency (s): {train_metrics['amortized_formal_round_latency_s']:.3f}")
 
         if (current_steps + 1) % config.train.evaluate_step == 0:
             best_metrics, first_target_time, first_target_wall_time = evaluate_and_log(
@@ -973,7 +1019,7 @@ if __name__ == '__main__':
     wandb.init(
         project='EdgeQGFed',
         dir='logs',
-        name=f"EdgeQGFed-d0.1-{config.models.encoder_name}-{config.datasets.name}-{datetime.datetime.now().strftime('%Y%m%d-%H%M')}",
+        name=f"EdgeQGFed-e1-{config.models.encoder_name}-{config.datasets.name}-{datetime.datetime.now().strftime('%Y%m%d-%H%M')}",
         config=OmegaConf.to_container(config),
         job_type='train',
     )

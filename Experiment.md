@@ -1,518 +1,423 @@
-# EdgeQGFed 实验设计与结果填表模板
+# EdgeQGFed 实验执行与填表说明
 
-本文实验按照 INFOCOM 风格组织，重点不是单纯追求集中式分类最高精度，而是证明 EdgeQGFed 在通信受限、链路异构、客户端不稳定和少标签条件下，能够实现更高效、更稳健的云-边-端协同学习。
+本文档与 `Experiment_Record_Template.xlsx` 一一对应，用于说明每个实验应该跑什么、修改哪些配置参数、记录哪些指标，以及结果应填写到 xlsx 的哪个 sheet 和哪个区域。
 
-建议所有结果至少运行 3 个随机种子，并报告 `mean ± std`。若训练成本较高，主结果表保留 3 次运行，敏感性实验可先报告单次结果，并在论文中说明。
+当前论文主实验数据集为 `CIFAR-10`、`CIFAR-100`、`HARBox` 和 `NSL-KDD`。SVHN 仍可作为代码支持的数据集保留，但不作为当前 xlsx 主实验的一部分。若后续需要补充 SVHN，可作为额外图像泛化结果单独加行。
 
-## 1. Experimental Setup
+## 0. 通用设置
 
-### 1.1 Datasets and Tasks
+### 0.1 基础配置文件
 
-| Dataset | Modality | Classes | Partition | Role in Experiments |
-|---|---:|---:|---|---|
-| HARBox | Sensor time series | 5 | User-level split | Main edge intelligence task |
-| SVHN | Image | 10 | Dirichlet non-IID | Lightweight visual task |
-| CIFAR-10 | Image | 10 | Dirichlet non-IID | Standard image benchmark |
-| CIFAR-100 | Image | 100 | Dirichlet non-IID | Harder large-class benchmark |
+| 数据集 | 配置文件 | 运行命令 |
+|---|---|---|
+| CIFAR-10 | `config/formated_config.yaml` | `python EdgeQGFed.py --config config/formated_config.yaml` |
+| CIFAR-100 | `config/100_basic_config.yaml` | `python EdgeQGFed.py --config config/100_basic_config.yaml` |
+| HARBox | `config/harbox_config.yaml` | `python EdgeQGFed.py --config config/harbox_config.yaml` |
+| NSL-KDD | `config/nslkdd_config.yaml` | `python EdgeQGFed.py --config config/nslkdd_config.yaml` |
 
-说明：HARBox 使用用户级划分，体现真实边缘用户差异，不使用 `edge_dirichlet_alpha` 表示边缘异构。SVHN、CIFAR-10 和 CIFAR-100 使用 Dirichlet 划分，主要报告 `partition_alpha=0.3` 和 `partition_alpha=0.1`。
+### 0.2 主要记录指标
 
-### 1.2 Default Training Settings
-
-| Parameter | HARBox | SVHN | CIFAR-10 | CIFAR-100 |
-|---|---:|---:|---:|---:|
-| `labeled_ratio` | 0.1 | 0.1 | 0.1 | 0.1 |
-| `num_edges` | 5 | 4 | 4 | 4 |
-| `num_clients` | 100 | 128 | 128 | 128 |
-| `clients_per_round` | 50 | 32 | 32 | 32 |
-| `batch_size` | 16 | 64 | 64 | 64 |
-| `total_steps` | 6000 | 3000 | 5000 | 6000 |
-| `learning_rate` | 8e-4 | 1e-3 | 1e-3 | 1e-3 |
-| `encoder` | identity | identity | ResNet-50 | ResNet-50 |
-| `classifier` | har-cnn | small-cnn | small-mlp | small-mlp |
-| `round_comm_budget_mb` | 300 | 1200 | 1200 | 1200 |
-
-### 1.3 Compared Methods
-
-| Method | Graph Aggregation | Pseudo Labeling | Client Sampling | Description |
-|---|---|---|---|---|
-| H-FedAvg | No | No | Balanced | Basic cloud-edge hierarchical FedAvg |
-| H-FedAvg + PL | No | Yes | Balanced | FedAvg with pseudo-label learning |
-| EdgeQGFed w/o Graph | No | Yes | Resource-aware | Remove cloud graph attention |
-| EdgeQGFed w/o RS | Yes | Yes | Balanced | Remove resource-aware sampling |
-| EdgeQGFed | Yes | Yes | Resource-aware | Full method |
-
-### 1.4 Main Metrics
-
-| Category | Metrics |
+| 论文含义 | 建议记录字段 |
 |---|---|
-| Accuracy | `cloud_accuracy`, `edge_avg_accuracy` |
-| Convergence | `cloud_loss`, `edge_avg_loss`, `edge_class_loss` |
-| Communication | `total_comm_mb`, `cumulative_comm_mb`, `budget_used_ratio` |
-| Latency | `formal_round_latency_s`, `cumulative_estimated_latency_s`, `time_to_target_accuracy_s` |
-| Robustness | `client_drop_ratio`, `active_clients`, `samples_per_estimated_second` |
-| Semi-supervised quality | `avg_pseudo_ratio`, `avg_pseudo_weight`, `avg_agreement_ratio`, `avg_consistency_ratio` |
-| Graph aggregation | `graph_attention_diag`, `graph_reliability_mean`, `graph_confidence_mean` |
+| 云端准确率 | `cloud_accuracy` |
+| 边缘平均准确率 | `edge_avg_accuracy` |
+| 云端 loss | `cloud_loss` |
+| 边缘平均 loss | `edge_avg_loss` |
+| 达到目标精度时间 | `time_to_target_accuracy_s` 或 `time_to_target_s` |
+| wall-clock 达到目标精度时间 | `wall_time_to_target_accuracy_s` |
+| 累计通信量 | `cumulative_comm_mb` |
+| 总通信量 | `total_comm_mb` |
+| 每轮形式化时延 | `formal_round_latency_s` |
+| 预算使用率 | `budget_used_ratio` |
+| 选中客户端数 | `selected_clients` |
+| 活跃客户端数 | `active_clients` |
+| 客户端掉线比例 | `client_drop_ratio` |
+| 图注意力对角占比 | `graph_attention_diag` |
+| 图可靠性均值 | `graph_reliability_mean` |
+| 图置信度均值 | `graph_confidence_mean` |
+| NSL-KDD Macro-F1 | `cloud_macro_f1` |
 
-### 1.5 Target Accuracy for Time-to-Accuracy
+建议主结果至少运行 3 个随机种子，填写 `mean±std`。如果训练成本较高，系统类实验可先填单次结果，并在论文中说明。
 
-| Dataset | Target Accuracy |
-|---|---:|
-| HARBox | 83.79 |
-| SVHN | 90.32 |
-| CIFAR-10 | ____ |
-| CIFAR-100 | ____ |
+### 0.3 方法配置
 
-建议初始值：HARBox 80%，SVHN 75%，CIFAR-10 70%，CIFAR-100 40%。若某方法未达到目标精度，填 `N/A`。
-
-## 2. Experiment 1: Overall Performance
-
-目的：展示 EdgeQGFed 在四个数据集上的总体性能，并与分层 FedAvg 及关键消融方法比较。这是论文主结果，建议放在实验部分最前面。
-
-### Parameter Setting
-
-| Parameter | Value |
+| 方法 | 配置修改 |
 |---|---|
-| `labeled_ratio` | 0.1 |
-| SVHN/CIFAR `partition_alpha` | 0.3 |
-| HARBox partition | user-level |
-| `bandwidth.mode` | edge_profile |
-| `client_drop_rate` | 0.0 |
-| `round_comm_budget_mb` | HARBox=300, others=1200 |
+| H-FedAvg | `models.graph.use=False`; `train.pseudo.use=False`; `topology.client_sample_mode=balanced` |
+| H-FedAvg+PL | `models.graph.use=False`; `train.pseudo.use=True`; `topology.client_sample_mode=balanced` |
+| EdgeQGFed | `models.graph.use=True`; `train.pseudo.use=True`; `topology.client_sample_mode=resource_aware` |
+| w/o Graph | `models.graph.use=False`; 其余保持 EdgeQGFed |
+| w/o Resource Sampling | `topology.client_sample_mode=balanced`; 其余保持 EdgeQGFed |
+| w/o Pseudo Label | `train.pseudo.use=False`; 其余保持 EdgeQGFed |
+| w/o Consistency | `train.initial_weight=0.0`; `train.final_weight=0.0`; 其余保持 EdgeQGFed |
 
-### Table 1: Overall Performance
+实验一中的 `FedAvg`、`FedProx`、`FedAsync`、`FedBuff`、`FedAC`、`ASAFL`、`FedAMP`、`pFedGraph`、`FedSaC` 等现有方法用于论文横向大表。若当前代码未完整实现这些方法，可先通过复现脚本、已有结果或后续独立 baseline 代码补齐。
 
-| Dataset | Method | Cloud Acc (%) | Edge Avg Acc (%) | Cloud Loss | Edge Avg Loss | Time-to-Target (s) | Total Comm (MB) |
-|---|---|---:|---:|---:|---:|---:|---:|
-| HARBox | H-FedAvg | ____ | ____ | ____ | ____ | ____ | ____ |
-| HARBox | H-FedAvg + PL | ____ | ____ | ____ | ____ | ____ | ____ |
-| HARBox | EdgeQGFed w/o Graph | ____ | ____ | ____ | ____ | ____ | ____ |
-| HARBox | EdgeQGFed w/o RS | ____ | ____ | ____ | ____ | ____ | ____ |
-| HARBox | EdgeQGFed | ____ | ____ | ____ | ____ | ____ | ____ |
-| SVHN | H-FedAvg | ____ | ____ | ____ | ____ | ____ | ____ |
-| SVHN | H-FedAvg + PL | ____ | ____ | ____ | ____ | ____ | ____ |
-| SVHN | EdgeQGFed w/o Graph | ____ | ____ | ____ | ____ | ____ | ____ |
-| SVHN | EdgeQGFed w/o RS | ____ | ____ | ____ | ____ | ____ | ____ |
-| SVHN | EdgeQGFed | ____ | ____ | ____ | ____ | ____ | ____ |
-| CIFAR-10 | H-FedAvg | ____ | ____ | ____ | ____ | ____ | ____ |
-| CIFAR-10 | H-FedAvg + PL | ____ | ____ | ____ | ____ | ____ | ____ |
-| CIFAR-10 | EdgeQGFed w/o Graph | ____ | ____ | ____ | ____ | ____ | ____ |
-| CIFAR-10 | EdgeQGFed w/o RS | ____ | ____ | ____ | ____ | ____ | ____ |
-| CIFAR-10 | EdgeQGFed | ____ | ____ | ____ | ____ | ____ | ____ |
-| CIFAR-100 | H-FedAvg | ____ | ____ | ____ | ____ | ____ | ____ |
-| CIFAR-100 | H-FedAvg + PL | ____ | ____ | ____ | ____ | ____ | ____ |
-| CIFAR-100 | EdgeQGFed w/o Graph | ____ | ____ | ____ | ____ | ____ | ____ |
-| CIFAR-100 | EdgeQGFed w/o RS | ____ | ____ | ____ | ____ | ____ | ____ |
-| CIFAR-100 | EdgeQGFed | ____ | ____ | ____ | ____ | ____ | ____ |
+## 1. 实验一：跨模态总体性能
 
-### Figures
+对应 xlsx sheet：`实验一 跨模态总体`
 
-| Figure | Type | X-axis | Y-axis | Curves / Groups |
-|---|---|---|---|---|
-| Fig. 1(a) | Line chart | Communication Round | Cloud Accuracy (%) | Five methods |
-| Fig. 1(b) | Line chart | Communication Round | Edge Avg Accuracy (%) | Five methods |
-| Fig. 1(c) | Grouped bar chart | Dataset | Final Cloud Accuracy (%) | Five methods |
-| Fig. 1(d) | Grouped bar chart | Dataset | Time-to-Target (s) | Five methods |
+### 1.1 实验目的
 
-### Expected Claim
+该实验是论文主结果，对比 EdgeQGFed 与现有大量联邦学习方法，证明本文方法不仅在单一图像任务有效，也能覆盖图像、传感序列和网络流量任务。
 
-EdgeQGFed should achieve the best or near-best accuracy while reducing time-to-target and communication cost. If absolute accuracy is close to other methods, emphasize its efficiency and robustness under network constraints.
+### 1.2 数据集与参数
 
-## 3. Experiment 2: Communication Efficiency
-
-目的：验证 EdgeQGFed 在相同通信量或相同通信预算下是否能更快达到目标精度。这一实验最贴近 INFOCOM 的网络系统关注点。
-
-### Parameter Sweep
-
-| Dataset | `round_comm_budget_mb` |
+| 数据集 | 参数设置 |
 |---|---|
-| HARBox | 100, 200, 300, 500 |
-| SVHN | 300, 600, 900, 1200 |
-| CIFAR-10 | 300, 600, 900, 1200 |
-| CIFAR-100 | 600, 900, 1200, 1800 |
+| CIFAR-10 | `partition_mode=client_dirichlet`; `partition_alpha=0.3` 和 `0.1`; `labeled_ratio=0.1` |
+| CIFAR-100 | `partition_mode=client_dirichlet`; `partition_alpha=0.3` 和 `0.1`; `labeled_ratio=0.1` |
+| HARBox | `partition_mode=user`; `labeled_ratio=0.1`; `round_comm_budget_mb=300` |
+| NSL-KDD | 五分类；`labeled_ratio=0.1`; `label_sampling=stratified`; `class_fn=weighted_focal` |
 
-### Table 2: Communication Budget Sensitivity
+NSL-KDD 说明：原始二分类可接近 `99%` 准确率，任务过于饱和。因此论文采用 `Normal, DoS, Probe, R2L, U2R` 五分类，并记录 `Acc` 和 `Macro-F1`。
 
-| Dataset | Budget (MB) | Method | Cloud Acc (%) | Edge Avg Acc (%) | Selected Clients | Budget Used Ratio | Time-to-Target (s) |
-|---|---:|---|---:|---:|---:|---:|---:|
-| HARBox | 100 | H-FedAvg | ____ | ____ | ____ | ____ | ____ |
-| HARBox | 100 | EdgeQGFed | ____ | ____ | ____ | ____ | ____ |
-| HARBox | 200 | H-FedAvg | ____ | ____ | ____ | ____ | ____ |
-| HARBox | 200 | EdgeQGFed | ____ | ____ | ____ | ____ | ____ |
-| HARBox | 300 | H-FedAvg | ____ | ____ | ____ | ____ | ____ |
-| HARBox | 300 | EdgeQGFed | ____ | ____ | ____ | ____ | ____ |
-| SVHN | 300 | H-FedAvg | ____ | ____ | ____ | ____ | ____ |
-| SVHN | 300 | EdgeQGFed | ____ | ____ | ____ | ____ | ____ |
-| CIFAR-10 | 300 | H-FedAvg | ____ | ____ | ____ | ____ | ____ |
-| CIFAR-10 | 300 | EdgeQGFed | ____ | ____ | ____ | ____ | ____ |
-| CIFAR-100 | 600 | H-FedAvg | ____ | ____ | ____ | ____ | ____ |
-| CIFAR-100 | 600 | EdgeQGFed | ____ | ____ | ____ | ____ | ____ |
+### 1.3 对比方法
 
-完整表格按所有预算展开。论文主文可只放 HARBox 和 CIFAR-10，其他数据集放附录或补充表。
+填写大表时，方法行包括：
 
-### Figures
+`FedAvg`, `FedProx`, `FedAsync`, `FedBuff`, `FedAC`, `ASAFL`, `FedAMP`, `pFedGraph`, `FedSaC`, `FedAMP-Async`, `pFedGraph-Async`, `EdgeQGFed`。
 
-| Figure | Type | X-axis | Y-axis | Curves / Groups |
-|---|---|---|---|---|
-| Fig. 2(a) | Line chart | Cumulative Communication (MB) | Cloud Accuracy (%) | Five methods |
-| Fig. 2(b) | Line chart | Round Communication Budget (MB) | Final Cloud Accuracy (%) | H-FedAvg, w/o RS, EdgeQGFed |
-| Fig. 2(c) | Line chart | Round Communication Budget (MB) | Time-to-Target (s) | H-FedAvg, w/o RS, EdgeQGFed |
-| Fig. 2(d) | Grouped bar chart | Dataset | Communication Saved at Target (%) | EdgeQGFed vs best baseline |
+### 1.4 填写位置
 
-### Expected Claim
+#### 表1：跨模态边缘任务下与现有方法的总体性能对比
 
-EdgeQGFed should require less cumulative communication to reach the same accuracy. Resource-aware sampling should be especially useful under small communication budgets.
+xlsx 位置：`实验一 跨模态总体` → `表1 跨模态边缘任务下与现有方法的总体性能对比`
 
-## 4. Experiment 3: Latency Breakdown and Time-to-Accuracy
+| xlsx 列 | 填写内容 |
+|---|---|
+| `CIFAR-10 Dir(0.3)` | CIFAR-10 在 `partition_alpha=0.3` 下的最终/best 云端准确率 |
+| `CIFAR-10 Dir(0.1)` | CIFAR-10 在 `partition_alpha=0.1` 下的最终/best 云端准确率 |
+| `CIFAR-100 Dir(0.3)` | CIFAR-100 在 `partition_alpha=0.3` 下的最终/best 云端准确率 |
+| `CIFAR-100 Dir(0.1)` | CIFAR-100 在 `partition_alpha=0.1` 下的最终/best 云端准确率 |
+| `HARBox Real-world` | HARBox 用户级划分下的最终/best 云端准确率 |
+| `NSL-KDD Acc` | NSL-KDD 五分类最终/best 云端准确率 |
+| `NSL-KDD Macro-F1` | NSL-KDD 五分类 macro-F1 |
 
-目的：展示端-边-云三层时延模型的作用，证明方法不只提升精度，也缩短实际边缘网络中的收敛时间。
+推荐填写格式：`83.21±0.42`。
 
-### Parameter Setting
+#### 图1(a)：不同数据集的模型收敛情况
 
-使用 Experiment 1 的默认设置，记录每轮通信与计算时延分量。
+xlsx 位置：`实验一 跨模态总体` → `图1(a) 不同数据集的模型收敛情况`
 
-### Table 3: Latency Components
+| 横轴 | 纵轴 | 每行 |
+|---|---|---|
+| 训练步数 `0, 500, ..., 6000` | `Cloud Accuracy (%)` | 一个数据集，记录完整 EdgeQGFed |
 
-| Dataset | Method | Terminal-to-Edge Upload (s) | Edge Compute (s) | Edge-to-Cloud Upload (s) | Cloud Aggregation (s) | Cloud-to-Edge Downlink (s) | Formal Round Latency (s) |
-|---|---|---:|---:|---:|---:|---:|---:|
-| HARBox | H-FedAvg | ____ | ____ | ____ | ____ | ____ | ____ |
-| HARBox | EdgeQGFed | ____ | ____ | ____ | ____ | ____ | ____ |
-| SVHN | H-FedAvg | ____ | ____ | ____ | ____ | ____ | ____ |
-| SVHN | EdgeQGFed | ____ | ____ | ____ | ____ | ____ | ____ |
-| CIFAR-10 | H-FedAvg | ____ | ____ | ____ | ____ | ____ | ____ |
-| CIFAR-10 | EdgeQGFed | ____ | ____ | ____ | ____ | ____ | ____ |
-| CIFAR-100 | H-FedAvg | ____ | ____ | ____ | ____ | ____ | ____ |
-| CIFAR-100 | EdgeQGFed | ____ | ____ | ____ | ____ | ____ | ____ |
+填写 `CIFAR-10`、`CIFAR-100`、`HARBox`、`NSL-KDD` 四条曲线。
 
-### Figures
+#### 图1(b)：主要方法最终准确率对比
 
-| Figure | Type | X-axis | Y-axis | Curves / Groups |
-|---|---|---|---|---|
-| Fig. 3(a) | Stacked bar chart | Dataset | Latency Components (s) | Terminal-edge, edge-cloud, cloud-edge, compute |
-| Fig. 3(b) | Line chart | Cumulative Estimated Latency (s) | Cloud Accuracy (%) | Five methods |
-| Fig. 3(c) | Grouped bar chart | Dataset | Time-to-Target (s) | Five methods |
+xlsx 位置：`实验一 跨模态总体` → `图1(b) 主要方法最终准确率对比`
 
-### Expected Claim
+| 横轴 | 纵轴 | 每行 |
+|---|---|---|
+| `CIFAR-10 Dir(0.3)`, `CIFAR-100 Dir(0.3)`, `HARBox`, `NSL-KDD` | `Final Cloud Accuracy (%)` | 一种方法 |
 
-Compared with baselines, EdgeQGFed should improve time-to-accuracy by selecting higher-value clients and reducing ineffective communication rounds.
+建议只放代表性方法：`FedAvg`, `FedProx`, `FedAMP`, `pFedGraph`, `EdgeQGFed`。
 
-## 5. Experiment 4: Bandwidth Heterogeneity
+#### 图1(c)：Time-to-Target 对比
 
-目的：验证链路异构增强时，资源感知采样和质量感知聚合是否能保持训练效率。
+xlsx 位置：`实验一 跨模态总体` → `图1(c) Time-to-Target 对比`
 
-### 5.1 Deterministic Edge Profile
+| 横轴 | 纵轴 | 每行 |
+|---|---|---|
+| 数据集 | `Time-to-Target (s)` | `H-FedAvg`, `H-FedAvg+PL`, `EdgeQGFed` |
 
-For SVHN, CIFAR-10, CIFAR-100:
+如果某方法没有达到目标精度，填 `N/A`。
 
-| Level | Client Uplink (Mbps) | Edge Uplink (Mbps) | Cloud Downlink (Mbps) |
+## 2. 实验二：通信效率与时延
+
+对应 xlsx sheet：`实验二 通信时延`
+
+### 2.1 实验目的
+
+证明 EdgeQGFed 在通信预算受限时能更有效地利用客户端上传，并通过三层时延模型反映端-边-云训练成本。
+
+只在 `HARBox` 和 `CIFAR-10` 上做，避免所有数据集重复展开。
+
+### 2.2 改变的参数
+
+HARBox：
+
+```yaml
+network:
+  round_comm_budget_mb: 100  # 也跑 200, 300, 500
+```
+
+CIFAR-10：
+
+```yaml
+network:
+  round_comm_budget_mb: 300  # 也跑 600, 900, 1200
+```
+
+方法：
+
+| 方法 | 配置 |
+|---|---|
+| H-FedAvg | `graph=False`, `pseudo=False`, `client_sample_mode=balanced` |
+| EdgeQGFed w/o RS | `graph=True`, `pseudo=True`, `client_sample_mode=balanced` |
+| EdgeQGFed | `graph=True`, `pseudo=True`, `client_sample_mode=resource_aware` |
+
+### 2.3 填写位置
+
+#### 表2：通信预算与时延敏感性
+
+xlsx 位置：`实验二 通信时延` → `表2 通信预算与时延敏感性`
+
+| xlsx 列 | 填写内容 |
+|---|---|
+| `Cloud Acc (%)` | 当前预算下的 best 云端准确率 |
+| `Time-to-Target (s)` | 达到目标精度所需估计时间 |
+| `Budget Used Ratio` | 当前轮或累计预算使用率 |
+| `Formal Round Latency (s)` | 形式化每轮时延 |
+| `Total Comm (MB)` | 总通信量 |
+
+#### 图2(a)：累计通信量下的准确率收敛
+
+xlsx 位置：`实验二 通信时延` → `图2(a) 累计通信量下的准确率收敛`
+
+| 横轴 | 纵轴 | 每行 |
+|---|---|---|
+| 累计通信量 MB | `Cloud Accuracy (%)` | `HARBox-H-FedAvg`, `HARBox-EdgeQGFed`, `CIFAR-10-H-FedAvg`, `CIFAR-10-EdgeQGFed` |
+
+#### 图2(b)：三层时延分解
+
+xlsx 位置：`实验二 通信时延` → `图2(b) 三层时延分解`
+
+| 横轴 | 纵轴 | 每列分量 |
+|---|---|---|
+| 数据集-方法 | `Latency Components (s)` | 端到边上传、边缘计算、边到云上传、云端聚合、云到边下发 |
+
+#### 图2(c)：通信预算与 Time-to-Target
+
+xlsx 位置：`实验二 通信时延` → `图2(c) 通信预算与 Time-to-Target`
+
+| 横轴 | 纵轴 | 每行 |
+|---|---|---|
+| `round_comm_budget_mb` | `Time-to-Target (s)` | 数据集-方法 |
+
+## 3. 实验三：系统鲁棒性
+
+对应 xlsx sheet：`实验三 系统鲁棒`
+
+### 3.1 实验目的
+
+验证客户端掉线、带宽异构和移动性条件下，资源感知采样和图注意力聚合是否提升稳定性。
+
+主实验只记录 `HARBox`，因为其用户级划分更接近真实边缘设备参与。若需要图像补充，可额外跑 CIFAR-10，但不作为主表必须项。
+
+### 3.2 改变的参数
+
+客户端掉线率：
+
+```yaml
+topology:
+  client_drop_rate: 0.0  # 也跑 0.1, 0.2, 0.3
+network:
+  mobility:
+    mode: "static"
+```
+
+带宽异构强度：
+
+```yaml
+network:
+  bandwidth:
+    mode: "edge_profile"
+```
+
+HARBox 建议三档：
+
+| 强度 | `client_uplink_by_edge_mbps` | `edge_uplink_by_edge_mbps` | `cloud_downlink_by_edge_mbps` |
 |---|---|---|---|
-| Mild | [60, 80, 100, 120] | [300, 400, 500, 600] | [600, 700, 800, 900] |
-| Medium | [40, 60, 80, 120] | [200, 300, 400, 600] | [400, 600, 800, 1000] |
-| Severe | [10, 30, 60, 120] | [80, 150, 300, 600] | [200, 400, 700, 1000] |
+| Mild | `[15, 20, 25, 30, 35]` | `[150, 180, 220, 260, 300]` | `[300, 350, 400, 450, 500]` |
+| Medium | `[5, 10, 20, 30, 50]` | `[80, 120, 200, 300, 400]` | `[150, 250, 400, 500, 600]` |
+| Severe | `[2, 5, 10, 25, 50]` | `[40, 80, 150, 250, 400]` | `[100, 180, 300, 450, 600]` |
 
-For HARBox:
+### 3.3 填写位置
 
-| Level | Client Uplink (Mbps) | Edge Uplink (Mbps) | Cloud Downlink (Mbps) |
-|---|---|---|---|
-| Mild | [20, 25, 30, 40, 50] | [150, 180, 220, 300, 400] | [250, 300, 400, 500, 600] |
-| Medium | [5, 10, 20, 30, 50] | [80, 120, 200, 300, 400] | [150, 250, 400, 500, 600] |
-| Severe | [2, 5, 10, 20, 50] | [40, 80, 120, 200, 400] | [80, 150, 250, 400, 600] |
+#### 表3：链路异构与客户端掉线鲁棒性
 
-### 5.2 Stochastic Bandwidth Distribution
+xlsx 位置：`实验三 系统鲁棒` → `表3 链路异构与客户端掉线鲁棒性`
 
-| Setting | Client Distribution | Edge Distribution | Cloud Downlink Distribution |
-|---|---|---|---|
-| Uniform | min=10, max=120 | min=100, max=1000 | min=300, max=1200 |
-| LogNormal-Mild | median=60, sigma=0.35 | median=400, sigma=0.35 | min=300, max=1200 |
-| LogNormal-Severe | median=40, sigma=0.75 | median=300, sigma=0.75 | min=100, max=1000 |
-
-### Table 4: Bandwidth Heterogeneity
-
-| Dataset | Bandwidth Setting | Method | Cloud Acc (%) | Formal Latency (s) | Time-to-Target (s) | Samples / Estimated Second |
-|---|---|---|---:|---:|---:|---:|
-| HARBox | Mild | H-FedAvg | ____ | ____ | ____ | ____ |
-| HARBox | Mild | EdgeQGFed | ____ | ____ | ____ | ____ |
-| HARBox | Medium | H-FedAvg | ____ | ____ | ____ | ____ |
-| HARBox | Medium | EdgeQGFed | ____ | ____ | ____ | ____ |
-| HARBox | Severe | H-FedAvg | ____ | ____ | ____ | ____ |
-| HARBox | Severe | EdgeQGFed | ____ | ____ | ____ | ____ |
-| CIFAR-10 | Mild | H-FedAvg | ____ | ____ | ____ | ____ |
-| CIFAR-10 | Mild | EdgeQGFed | ____ | ____ | ____ | ____ |
-| CIFAR-10 | Severe | H-FedAvg | ____ | ____ | ____ | ____ |
-| CIFAR-10 | Severe | EdgeQGFed | ____ | ____ | ____ | ____ |
-
-### Figures
-
-| Figure | Type | X-axis | Y-axis | Curves / Groups |
-|---|---|---|---|---|
-| Fig. 4(a) | Line chart | Bandwidth Heterogeneity Level | Cloud Accuracy (%) | H-FedAvg, w/o RS, EdgeQGFed |
-| Fig. 4(b) | Line chart | Bandwidth Heterogeneity Level | Time-to-Target (s) | H-FedAvg, w/o RS, EdgeQGFed |
-| Fig. 4(c) | Box plot | Bandwidth Distribution | Formal Round Latency (s) | Methods |
-| Fig. 4(d) | Line chart | Communication Round | Samples per Estimated Second | Methods |
-
-### Expected Claim
-
-The performance gap should become larger under severe bandwidth heterogeneity, showing that EdgeQGFed is more network-aware than standard hierarchical FedAvg.
-
-## 6. Experiment 5: Client Dropout and Mobility
-
-目的：验证客户端掉线和移动性条件下的鲁棒性。这部分非常适合 INFOCOM，因为它直接体现真实无线边缘网络中的不稳定参与。
-
-### Static Dropout
-
-| Parameter | Values |
+| xlsx 列 | 填写内容 |
 |---|---|
-| `mobility.mode` | static |
-| `client_drop_rate` | 0.0, 0.1, 0.3, 0.5 |
+| `Cloud Acc (%)` | 掉线率下 best 云端准确率 |
+| `Active Clients` | 实际活跃客户端数 |
+| `Client Drop Ratio` | 实际掉线比例 |
+| `Time-to-Target (s)` | 达到目标精度时间 |
 
-### Mobility-Induced Dropout
+#### 图3(a)：客户端掉线率与云端准确率
 
-| Parameter | Values |
+xlsx 位置：`实验三 系统鲁棒` → `图3(a) 客户端掉线率与云端准确率`
+
+| 横轴 | 纵轴 | 每行 |
+|---|---|---|
+| `client_drop_rate = 0.0, 0.1, 0.2, 0.3` | `Cloud Accuracy (%)` | `H-FedAvg`, `EdgeQGFed w/o RS`, `EdgeQGFed` |
+
+#### 图3(b)：带宽异构强度与 Time-to-Target
+
+xlsx 位置：`实验三 系统鲁棒` → `图3(b) 带宽异构强度与 Time-to-Target`
+
+| 横轴 | 纵轴 | 每行 |
+|---|---|---|
+| `Mild`, `Medium`, `Severe` | `Time-to-Target (s)` | `H-FedAvg`, `EdgeQGFed w/o RS`, `EdgeQGFed` |
+
+## 4. 实验四：消融实验
+
+对应 xlsx sheet：`实验四 消融`
+
+### 4.1 实验目的
+
+分析 EdgeQGFed 各模块贡献：云端图注意力、资源感知采样、伪标签学习和云边一致性。
+
+数据集只跑：
+
+| 数据集 | 作用 |
 |---|---|
-| `mobility.mode` | mobility |
-| `handoff_probability` | 0.05, 0.10, 0.20 |
-| `handoff_drop_boost` | 0.20 |
-| `drop_jitter` | 0.03 |
+| HARBox | 传感序列边缘任务 |
+| CIFAR-10 | 图像边缘任务 |
 
-### Table 5: Dropout and Mobility Robustness
+### 4.2 改变的参数
 
-| Dataset | Drop Setting | Method | Cloud Acc (%) | Active Clients | Client Drop Ratio | Time-to-Target (s) | Accuracy Drop (%) |
-|---|---|---|---:|---:|---:|---:|---:|
-| HARBox | 0.0 | H-FedAvg | ____ | ____ | ____ | ____ | ____ |
-| HARBox | 0.0 | EdgeQGFed | ____ | ____ | ____ | ____ | ____ |
-| HARBox | 0.3 | H-FedAvg | ____ | ____ | ____ | ____ | ____ |
-| HARBox | 0.3 | EdgeQGFed | ____ | ____ | ____ | ____ | ____ |
-| HARBox | 0.5 | H-FedAvg | ____ | ____ | ____ | ____ | ____ |
-| HARBox | 0.5 | EdgeQGFed | ____ | ____ | ____ | ____ | ____ |
-| CIFAR-10 | 0.0 | H-FedAvg | ____ | ____ | ____ | ____ | ____ |
-| CIFAR-10 | 0.0 | EdgeQGFed | ____ | ____ | ____ | ____ | ____ |
-| CIFAR-10 | 0.3 | H-FedAvg | ____ | ____ | ____ | ____ | ____ |
-| CIFAR-10 | 0.3 | EdgeQGFed | ____ | ____ | ____ | ____ | ____ |
-
-### Figures
-
-| Figure | Type | X-axis | Y-axis | Curves / Groups |
-|---|---|---|---|---|
-| Fig. 5(a) | Line chart | Client Drop Rate | Cloud Accuracy (%) | Methods |
-| Fig. 5(b) | Line chart | Client Drop Rate | Time-to-Target (s) | Methods |
-| Fig. 5(c) | Line chart | Handoff Probability | Cloud Accuracy (%) | Methods |
-| Fig. 5(d) | Grouped bar chart | Drop Setting | Active Clients | Methods |
-
-### Expected Claim
-
-EdgeQGFed should show smaller accuracy degradation and more stable convergence as dropout or mobility increases.
-
-## 7. Experiment 6: Statistical Heterogeneity
-
-目的：验证 non-IID 程度增强时，云端图注意力聚合能否缓解低质量边缘更新的负面影响。
-
-### Parameter Sweep
-
-| Dataset | Heterogeneity Parameter |
+| 变体 | 修改 |
 |---|---|
-| SVHN | `partition_alpha=0.3, 0.1` |
-| CIFAR-10 | `partition_alpha=0.3, 0.1` |
-| CIFAR-100 | `partition_alpha=0.3, 0.1` |
-| HARBox | `HARBOX_TRAIN_USERS=120, 90` |
-
-### Table 6: Non-IID Robustness
-
-| Dataset | Heterogeneity | Method | Cloud Acc (%) | Edge Avg Acc (%) | Accuracy Drop (%) | Graph Attention Diag |
-|---|---|---|---:|---:|---:|---:|
-| SVHN | alpha=0.3 | H-FedAvg | ____ | ____ | ____ | ____ |
-| SVHN | alpha=0.3 | EdgeQGFed | ____ | ____ | ____ | ____ |
-| SVHN | alpha=0.1 | H-FedAvg | ____ | ____ | ____ | ____ |
-| SVHN | alpha=0.1 | EdgeQGFed | ____ | ____ | ____ | ____ |
-| CIFAR-10 | alpha=0.3 | H-FedAvg | ____ | ____ | ____ | ____ |
-| CIFAR-10 | alpha=0.3 | EdgeQGFed | ____ | ____ | ____ | ____ |
-| CIFAR-10 | alpha=0.1 | H-FedAvg | ____ | ____ | ____ | ____ |
-| CIFAR-10 | alpha=0.1 | EdgeQGFed | ____ | ____ | ____ | ____ |
-| CIFAR-100 | alpha=0.3 | H-FedAvg | ____ | ____ | ____ | ____ |
-| CIFAR-100 | alpha=0.1 | EdgeQGFed | ____ | ____ | ____ | ____ |
-| HARBox | users=120 | H-FedAvg | ____ | ____ | ____ | ____ |
-| HARBox | users=90 | EdgeQGFed | ____ | ____ | ____ | ____ |
-
-### Figures
-
-| Figure | Type | X-axis | Y-axis | Curves / Groups |
-|---|---|---|---|---|
-| Fig. 6(a) | Grouped bar chart | Dataset and Heterogeneity | Cloud Accuracy (%) | H-FedAvg, w/o Graph, EdgeQGFed |
-| Fig. 6(b) | Line chart | Dirichlet Alpha | Accuracy Drop (%) | Methods |
-| Fig. 6(c) | Heatmap | Edge Node | Edge Node | Graph Attention Weights |
-| Fig. 6(d) | Line chart | Communication Round | Graph Attention Diag | EdgeQGFed |
-
-### Expected Claim
-
-When data heterogeneity becomes stronger, EdgeQGFed should suffer a smaller accuracy drop. The attention heatmap can visually support that the cloud learns non-uniform edge relationships.
-
-## 8. Experiment 7: Label Efficiency
-
-目的：验证 EdgeQGFed 能否在少标签条件下有效利用未标注边缘数据。
-
-### Parameter Sweep
-
-| Parameter | Values |
-|---|---|
-| `labeled_ratio` | 0.05, 0.1, 0.2, 1.0 |
-
-HARBox 可额外跑 `0.01`，但如果波动较大，主文只放 `0.05, 0.1, 0.2, 1.0`。
-
-### Table 7: Label Ratio Sensitivity
-
-| Dataset | Label Ratio | Method | Cloud Acc (%) | Edge Avg Acc (%) | Avg Pseudo Ratio | Avg Pseudo Weight | Avg Agreement Ratio |
-|---|---:|---|---:|---:|---:|---:|---:|
-| HARBox | 0.05 | Supervised Only | ____ | ____ | ____ | ____ | ____ |
-| HARBox | 0.05 | EdgeQGFed | ____ | ____ | ____ | ____ | ____ |
-| HARBox | 0.1 | Supervised Only | ____ | ____ | ____ | ____ | ____ |
-| HARBox | 0.1 | EdgeQGFed | ____ | ____ | ____ | ____ | ____ |
-| HARBox | 0.2 | Supervised Only | ____ | ____ | ____ | ____ | ____ |
-| HARBox | 0.2 | EdgeQGFed | ____ | ____ | ____ | ____ | ____ |
-| HARBox | 1.0 | Fully Supervised | ____ | ____ | N/A | N/A | N/A |
-| CIFAR-10 | 0.05 | Supervised Only | ____ | ____ | ____ | ____ | ____ |
-| CIFAR-10 | 0.05 | EdgeQGFed | ____ | ____ | ____ | ____ | ____ |
-| CIFAR-10 | 0.1 | Supervised Only | ____ | ____ | ____ | ____ | ____ |
-| CIFAR-10 | 0.1 | EdgeQGFed | ____ | ____ | ____ | ____ | ____ |
-
-### Figures
-
-| Figure | Type | X-axis | Y-axis | Curves / Groups |
-|---|---|---|---|---|
-| Fig. 7(a) | Line chart | Label Ratio | Cloud Accuracy (%) | Supervised Only, PL Only, EdgeQGFed |
-| Fig. 7(b) | Line chart | Label Ratio | Edge Avg Accuracy (%) | Supervised Only, PL Only, EdgeQGFed |
-| Fig. 7(c) | Line chart | Label Ratio | Avg Pseudo Weight | EdgeQGFed |
-| Fig. 7(d) | Line chart | Communication Round | Weighted Pseudo Loss | EdgeQGFed |
-
-### Expected Claim
-
-At `labeled_ratio=0.1`, EdgeQGFed should approach its full-supervised upper bound while using far fewer labels. For HARBox, this result supports the claim that the method is useful when edge labels are scarce.
-
-## 9. Experiment 8: Ablation Study
-
-目的：验证 EdgeQGFed 中各关键模块的贡献，包括图注意力、资源感知采样、伪标签学习和质量信号。
-
-### Ablation Variants
-
-| Variant | Configuration |
-|---|---|
-| Full EdgeQGFed | All modules enabled |
+| Full EdgeQGFed | 默认完整配置 |
 | w/o Graph | `models.graph.use=False` |
-| w/o Prototype | `prototype_weight=0.0` |
-| w/o Reliability | `reliability_weight=0.0` |
-| w/o Label Ratio | `label_ratio_weight=0.0` |
-| w/o Confidence | `confidence_weight=0.0` |
-| w/o Resource Sampling | `client_sample_mode=balanced` |
+| w/o Resource Sampling | `topology.client_sample_mode=balanced` |
 | w/o Pseudo Label | `train.pseudo.use=False` |
+| w/o Consistency | `train.initial_weight=0.0`; `train.final_weight=0.0` |
 
-### Table 8: Ablation Results
+### 4.3 填写位置
 
-| Dataset | Variant | Cloud Acc (%) | Edge Avg Acc (%) | Time-to-Target (s) | Total Comm (MB) | Graph Attention Diag |
-|---|---|---:|---:|---:|---:|---:|
-| HARBox | Full EdgeQGFed | ____ | ____ | ____ | ____ | ____ |
-| HARBox | w/o Graph | ____ | ____ | ____ | ____ | ____ |
-| HARBox | w/o Reliability | ____ | ____ | ____ | ____ | ____ |
-| HARBox | w/o Resource Sampling | ____ | ____ | ____ | ____ | ____ |
-| HARBox | w/o Pseudo Label | ____ | ____ | ____ | ____ | ____ |
-| CIFAR-10 | Full EdgeQGFed | ____ | ____ | ____ | ____ | ____ |
-| CIFAR-10 | w/o Graph | ____ | ____ | ____ | ____ | ____ |
-| CIFAR-10 | w/o Reliability | ____ | ____ | ____ | ____ | ____ |
-| CIFAR-10 | w/o Resource Sampling | ____ | ____ | ____ | ____ | ____ |
-| CIFAR-10 | w/o Pseudo Label | ____ | ____ | ____ | ____ | ____ |
+#### 表4：消融实验
 
-### Figures
+xlsx 位置：`实验四 消融` → `表4 消融实验`
 
-| Figure | Type | X-axis | Y-axis | Curves / Groups |
-|---|---|---|---|---|
-| Fig. 8(a) | Grouped bar chart | Ablation Variant | Cloud Accuracy (%) | HARBox, CIFAR-10 |
-| Fig. 8(b) | Grouped bar chart | Ablation Variant | Time-to-Target (s) | HARBox, CIFAR-10 |
-| Fig. 8(c) | Line chart | Communication Round | Graph Reliability Mean | Graph variants |
-| Fig. 8(d) | Heatmap | Edge Node | Edge Node | Learned attention matrix |
+| xlsx 列 | 填写内容 |
+|---|---|
+| `Cloud Acc (%)` | best 云端准确率 |
+| `Time-to-Target (s)` | 达到目标精度时间 |
+| `Total Comm (MB)` | 总通信量 |
 
-### Expected Claim
+#### 图4(a)：消融变体与云端准确率
 
-Removing graph aggregation should hurt accuracy under non-IID settings. Removing resource-aware sampling should mainly hurt communication efficiency and time-to-target. Removing pseudo labeling should hurt low-label performance.
+xlsx 位置：`实验四 消融` → `图4(a) 消融变体与云端准确率`
 
-## 10. Experiment 9: Scalability
+| 横轴 | 纵轴 | 每行 |
+|---|---|---|
+| 消融变体 | `Cloud Accuracy (%)` | `HARBox`, `CIFAR-10` |
 
-目的：验证客户端数量和边缘节点数量变化时，EdgeQGFed 的训练效率和聚合开销是否可控。
+#### 图4(b)：消融变体与 Time-to-Target
 
-### Scale Settings
+xlsx 位置：`实验四 消融` → `图4(b) 消融变体与 Time-to-Target`
 
-| Setting | `num_clients` | `num_edges` | `clients_per_round` |
-|---|---:|---:|---:|
-| Small | 64 | 4 | 16 |
-| Default | 128 | 4 | 32 |
-| Large | 256 | 4 | 64 |
-| Few Edges | 128 | 2 | 32 |
-| Many Edges | 128 | 8 | 32 |
+| 横轴 | 纵轴 | 每行 |
+|---|---|---|
+| 消融变体 | `Time-to-Target (s)` | `HARBox`, `CIFAR-10` |
 
-HARBox 受用户数限制时使用：
+## 5. 实验五：质量敏感性
 
-| Setting | `num_clients` | `num_edges` | `clients_per_round` |
-|---|---:|---:|---:|
-| HARBox-Small | 50 | 5 | 25 |
-| HARBox-Default | 100 | 5 | 50 |
+对应 xlsx sheet：`实验五 质量敏感`
 
-### Table 9: Scalability Results
+### 5.1 实验目的
 
-| Dataset | Scale Setting | Method | Cloud Acc (%) | Formal Latency (s) | Total Comm (MB) | Wall-clock Time (s) |
-|---|---|---|---:|---:|---:|---:|
-| CIFAR-10 | Small | H-FedAvg | ____ | ____ | ____ | ____ |
-| CIFAR-10 | Small | EdgeQGFed | ____ | ____ | ____ | ____ |
-| CIFAR-10 | Default | H-FedAvg | ____ | ____ | ____ | ____ |
-| CIFAR-10 | Default | EdgeQGFed | ____ | ____ | ____ | ____ |
-| CIFAR-10 | Large | H-FedAvg | ____ | ____ | ____ | ____ |
-| CIFAR-10 | Large | EdgeQGFed | ____ | ____ | ____ | ____ |
-| HARBox | HARBox-Small | H-FedAvg | ____ | ____ | ____ | ____ |
-| HARBox | HARBox-Small | EdgeQGFed | ____ | ____ | ____ | ____ |
-| HARBox | HARBox-Default | H-FedAvg | ____ | ____ | ____ | ____ |
-| HARBox | HARBox-Default | EdgeQGFed | ____ | ____ | ____ | ____ |
+分析 EdgeQGFed 对数据异构程度、标签比例和图质量信号的敏感性。
 
-### Figures
+该实验不对所有数据集重复展开：
 
-| Figure | Type | X-axis | Y-axis | Curves / Groups |
-|---|---|---|---|---|
-| Fig. 9(a) | Line chart | Num Clients | Cloud Accuracy (%) | H-FedAvg, EdgeQGFed |
-| Fig. 9(b) | Line chart | Num Clients | Formal Round Latency (s) | H-FedAvg, EdgeQGFed |
-| Fig. 9(c) | Line chart | Num Edges | Total Communication (MB) | H-FedAvg, EdgeQGFed |
-| Fig. 9(d) | Bar chart | Num Edges | Graph Aggregation Overhead (s) | EdgeQGFed |
+| 数据集 | 分析内容 |
+|---|---|
+| CIFAR-10 | Dirichlet non-IID 敏感性 |
+| CIFAR-100 | Dirichlet non-IID 敏感性 |
+| HARBox | 标签比例敏感性 |
+| NSL-KDD | 只作为图质量信号中的一个跨模态点，不单独分析 |
 
-### Expected Claim
+### 5.2 改变的参数
 
-EdgeQGFed should maintain stable accuracy and acceptable overhead as clients or edge nodes increase. If graph aggregation overhead grows, emphasize that the cost is at the cloud and remains small relative to communication latency.
+图像任务 non-IID：
 
-## 11. Minimum Required Experiments
+```yaml
+datasets:
+  partition_mode: "client_dirichlet"
+  partition_alpha: 0.1  # 也跑 0.3, 0.5, 1.0
+```
 
-如果时间有限，优先完成下面实验。这个组合已经能形成完整 INFOCOM 证据链。
+HARBox 标签比例：
 
-| Priority | Experiment | Dataset | Required Figures / Tables |
-|---:|---|---|---|
-| 1 | Overall performance | HARBox, SVHN, CIFAR-10, CIFAR-100 | Table 1, Fig. 1 |
-| 2 | Communication efficiency | HARBox, CIFAR-10 | Table 2, Fig. 2 |
-| 3 | Latency breakdown | HARBox, CIFAR-10 | Table 3, Fig. 3 |
-| 4 | Dropout and mobility | HARBox, CIFAR-10 | Table 5, Fig. 5 |
-| 5 | Statistical heterogeneity | SVHN, CIFAR-10, CIFAR-100 | Table 6, Fig. 6 |
-| 6 | Ablation study | HARBox, CIFAR-10 | Table 8, Fig. 8 |
+```yaml
+datasets:
+  labeled_ratio: 0.05  # 也跑 0.1, 0.2, 1.0
+```
 
-## 12. Suggested Paper Figure Order
+当 `labeled_ratio=1.0` 作为全监督对照时，建议：
 
-| Order | Figure/Table | Content |
-|---:|---|---|
-| Table 1 | Overall performance | Four datasets and five methods |
-| Fig. 1 | Accuracy curves | Accuracy vs communication round |
-| Fig. 2 | Communication efficiency | Accuracy vs cumulative communication |
-| Fig. 3 | Time-to-accuracy | Accuracy vs estimated latency and latency components |
-| Fig. 4 | Bandwidth heterogeneity | Performance under mild, medium, severe bandwidth |
-| Fig. 5 | Dropout and mobility | Robustness under unstable clients |
-| Table 6 | Non-IID robustness | alpha=0.3 and alpha=0.1 |
-| Fig. 7 | Label efficiency | Accuracy under different label ratios |
-| Table 8 | Ablation | Contributions of graph, sampling, pseudo labels |
-| Fig. 8 | Graph attention visualization | Attention heatmap and graph metrics |
-| Table 9 | Scalability | Clients and edge nodes |
+```yaml
+train:
+  pseudo:
+    use: False
+```
 
-## 13. Result Writing Notes
+### 5.3 填写位置
 
-HARBox 可作为主数据集，因为它更贴近真实边缘智能中的用户级数据异构和轻量终端参与。不要把 HARBox 结果写成超过已有集中式 HAR 方法，而应强调：
+#### 表5：跨模态质量敏感性
 
-> Under user-level partition, limited labels, communication budgets, and unstable participation, EdgeQGFed achieves strong accuracy while reducing communication cost and time-to-accuracy.
+xlsx 位置：`实验五 质量敏感` → `表5 跨模态质量敏感性`
 
-SVHN、CIFAR-10 和 CIFAR-100 用于说明方法可迁移到不同边缘任务。论文中可以说 EdgeQGFed supports cross-modal edge intelligence tasks，但不要说它是多模态融合模型。
+| xlsx 列 | 填写内容 |
+|---|---|
+| `Cloud Acc (%)` | 对应参数下 best 云端准确率 |
+| `Edge Avg Acc (%)` | 对应参数下 best 边缘平均准确率 |
+| `Time-to-Target (s)` | 达到目标精度时间 |
+
+#### 图5(a)：Dirichlet alpha 与图像任务准确率
+
+xlsx 位置：`实验五 质量敏感` → `图5(a) Dirichlet alpha 与图像任务准确率`
+
+| 横轴 | 纵轴 | 每行 |
+|---|---|---|
+| `partition_alpha = 0.1, 0.3, 0.5, 1.0` | `Cloud Accuracy (%)` | `CIFAR-10-H-FedAvg`, `CIFAR-10-EdgeQGFed`, `CIFAR-100-H-FedAvg`, `CIFAR-100-EdgeQGFed` |
+
+#### 图5(b)：HARBox 标签比例与准确率
+
+xlsx 位置：`实验五 质量敏感` → `图5(b) HARBox 标签比例与准确率`
+
+| 横轴 | 纵轴 | 每行 |
+|---|---|---|
+| `labeled_ratio = 0.05, 0.1, 0.2, 1.0` | `Cloud Accuracy (%)` | `H-FedAvg`, `EdgeQGFed` |
+
+#### 图5(c)：图注意力质量信号
+
+xlsx 位置：`实验五 质量敏感` → `图5(c) 图注意力质量信号`
+
+| 横轴 | 纵轴 | 每行 |
+|---|---|---|
+| `CIFAR-10`, `CIFAR-100`, `HARBox`, `NSL-KDD` | Graph Metric | `graph_attention_diag`, `graph_reliability_mean`, `graph_confidence_mean` |
+
+## 6. 建议实验优先级
+
+如果时间有限，建议按以下顺序跑：
+
+1. 实验一中 EdgeQGFed 在四个数据集上的主结果。
+2. 实验一中关键 baseline：`FedAvg`, `FedProx`, `FedAMP`, `pFedGraph`。
+3. 实验二通信效率：HARBox 和 CIFAR-10。
+4. 实验四消融：HARBox 和 CIFAR-10。
+5. 实验三系统鲁棒性：HARBox。
+6. 实验五敏感性：CIFAR-10/CIFAR-100 的 `alpha=0.1,0.3`，HARBox 的 `labeled_ratio=0.05,0.1,0.2,1.0`。
+
+## 7. 写论文时的对应关系
+
+| 论文位置 | 对应 xlsx |
+|---|---|
+| 数据集与实验设置 | `总览与配置` |
+| 主结果大表 | `实验一 跨模态总体` → 表1 |
+| 收敛曲线 | `实验一 跨模态总体` → 图1(a) |
+| 方法柱状对比 | `实验一 跨模态总体` → 图1(b) |
+| Time-to-Target | `实验一 跨模态总体` → 图1(c)，以及 `实验二 通信时延` |
+| 通信效率 | `实验二 通信时延` |
+| 三层时延模型 | `实验二 通信时延` → 图2(b) |
+| 掉线和带宽异构 | `实验三 系统鲁棒` |
+| 模块贡献 | `实验四 消融` |
+| non-IID 与标签比例敏感性 | `实验五 质量敏感` |

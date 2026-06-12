@@ -379,10 +379,12 @@ class Tree:
     def _selected_edges(self, sampled):
         return [edge_name for edge_name, client_ids in sampled.items() if client_ids]
 
-    def _estimated_round_comm_mb(self, sampled, config):
+    def _estimated_round_comm_mb(self, sampled, config, include_model_sync=None):
         selected_edges = self._selected_edges(sampled)
         client_upload_mb = sum(len(client_ids) for client_ids in sampled.values()) * self._estimate_client_upload_mb()
-        if not bool(OmegaConf.select(config, 'network.budget.include_model_sync', default=True)):
+        if include_model_sync is None:
+            include_model_sync = bool(OmegaConf.select(config, 'network.budget.include_model_sync', default=True))
+        if not include_model_sync:
             return client_upload_mb
         sync_mb = self._estimate_edge_sync_mb()
         edge_upload_mb = len(selected_edges) * sync_mb
@@ -409,7 +411,7 @@ class Tree:
         upload_latency = (self._estimate_client_upload_mb() * 8.0) / max(profile['client_uplink_mbps'], 1e-6)
         return quality / max(upload_latency ** latency_cost_weight, 1e-8)
 
-    def _apply_network_constraints(self, sampled, config):
+    def _apply_network_constraints(self, sampled, config, include_model_sync=None):
         max_parallel = int(config.network.max_parallel_uploads_per_edge)
         if max_parallel > 0:
             for edge_name in sampled:
@@ -422,7 +424,7 @@ class Tree:
 
         budget_mb = float(config.network.round_comm_budget_mb)
         if budget_mb > 0:
-            while self._estimated_round_comm_mb(sampled, config) > budget_mb:
+            while self._estimated_round_comm_mb(sampled, config, include_model_sync=include_model_sync) > budget_mb:
                 removable = [
                     (self._client_utility(client_id, config), edge_name, client_id)
                     for edge_name, client_ids in sampled.items()
@@ -434,7 +436,7 @@ class Tree:
                 sampled[edge_name].remove(client_id)
         return {edge_name: client_ids for edge_name, client_ids in sampled.items() if client_ids}
 
-    def _sample_resource_aware_clients(self, config):
+    def _sample_resource_aware_clients(self, config, include_model_sync=None):
         total_clients = min(config.topology.clients_per_round, len(self.client_registry))
         edge_names = list(self.edge_to_clients.keys())
         edges_per_round = min(config.topology.edges_per_round, len(edge_names), total_clients)
@@ -467,9 +469,9 @@ class Tree:
             if len(sampled[edge_name]) >= per_edge_limit:
                 continue
             sampled[edge_name].append(client_id)
-        return self._apply_network_constraints(sampled, config)
+        return self._apply_network_constraints(sampled, config, include_model_sync=include_model_sync)
 
-    def sample_clients(self, config):
+    def sample_clients(self, config, include_model_sync=None):
         total_clients = min(config.topology.clients_per_round, len(self.client_registry))
         edge_names = list(self.edge_to_clients.keys())
         if not edge_names or total_clients == 0:
@@ -478,7 +480,7 @@ class Tree:
         sample_mode = config.topology.client_sample_mode.lower()
         sampled = {edge_name: [] for edge_name in edge_names}
         if sample_mode == 'resource_aware':
-            sampled = self._sample_resource_aware_clients(config)
+            sampled = self._sample_resource_aware_clients(config, include_model_sync=include_model_sync)
         elif sample_mode in {'balanced', 'budget_aware'}:
             edges_per_round = min(config.topology.edges_per_round, len(edge_names), total_clients)
             selected_edges = edge_names if edges_per_round == len(edge_names) else random.sample(edge_names, edges_per_round)
@@ -505,14 +507,14 @@ class Tree:
                         edge_name = self.client_registry[client_id]['edge_name']
                         sampled[edge_name].append(client_id)
             if sample_mode == 'budget_aware':
-                sampled = self._apply_network_constraints(sampled, config)
+                sampled = self._apply_network_constraints(sampled, config, include_model_sync=include_model_sync)
         elif sample_mode == 'uniform':
             all_client_ids = list(self.client_registry.keys())
             selected_clients = random.sample(all_client_ids, total_clients)
             for client_id in selected_clients:
                 edge_name = self.client_registry[client_id]['edge_name']
                 sampled[edge_name].append(client_id)
-            sampled = self._apply_network_constraints(sampled, config)
+            sampled = self._apply_network_constraints(sampled, config, include_model_sync=include_model_sync)
         else:
             raise ValueError(f'Unknown client_sample_mode: {config.topology.client_sample_mode}')
 

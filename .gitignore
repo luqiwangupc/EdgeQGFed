@@ -43,6 +43,7 @@ tree/data/
 *.pth
 *.pt
 *.onnx
+*.ps1
 
 # LaTeX build artifacts
 *.aux

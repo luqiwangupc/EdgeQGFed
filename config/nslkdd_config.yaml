@@ -2,10 +2,10 @@ train:
   learning_rate: 8.0e-4
   total_steps: 3000
   log_step: 20
-  evaluate_step: 50
+  evaluate_step: 100
   ema_update_step: 10
   ckpt_save_path: "checkpoints"
-  ckpt_save_name: "best_edgeqgfed_nslkdd_5class_l0.1.pth"
+  ckpt_save_name: "best_edgeqgfed_nslkdd_e1.pth"
   class_fn: "weighted_focal"
   consis_fn: "MSE"
   optimizer: "AdamW"
@@ -26,7 +26,7 @@ train:
   final_weight: 0.1
   warm_mode: "gaussian"
   consistency_confidence_gate: True
-  device: 2
+  device: 4
   pseudo:
     use: True
     weight: 0.03
@@ -38,9 +38,9 @@ train:
     min_weight: 0.6
 
 topology:
-  num_edges: 5
+  num_edges: 1
   num_clients: 100
-  clients_per_round: 40
+  clients_per_round: 40 #40
   edges_per_round: 5
   client_sample_mode: "resource_aware"
   assignment: "round_robin"
@@ -61,7 +61,7 @@ datasets:
   pin_memory: False
   distributed: "nonIID"
   partition_mode: "client_dirichlet"
-  partition_alpha: 0.5
+  partition_alpha: 0.3
   min_client_size: 4
   edge_dirichlet_alpha: 0.3
   client_dirichlet_alpha: 1.0

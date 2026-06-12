@@ -5,7 +5,7 @@ train:
   evaluate_step: 100
   ema_update_step: 50
   ckpt_save_path: "checkpoints"
-  ckpt_save_name: "best_edgeqgfed_cifar100_d0.1.pth"
+  ckpt_save_name: "best_edgeqgfed_cifar100.pth"
   class_fn: "CE"
   consis_fn: "MSE"
   optimizer: "AdamW"
@@ -16,7 +16,7 @@ train:
   initial_weight: 0.0
   final_weight: 0.4
   warm_mode: "gaussian"
-  device: 3
+  device: 5
   # consistency_confidence_gate: True
   pseudo:
     use: True

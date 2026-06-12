@@ -1,39 +1,215 @@
+\documentclass[journal]{IEEEtran}
+\usepackage{ctex}
+\usepackage{amsmath,amsfonts,amssymb}
+\usepackage{algorithmic}
+\usepackage[linesnumbered,ruled]{algorithm2e}
+\usepackage{array}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{tabularx}
+\usepackage{graphicx}
+\usepackage{cite}
+\usepackage{url}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{pgfplots}
+\usepgfplotslibrary{polar}
+\pgfplotsset{compat=1.18}
+
+\definecolor{cmain}{HTML}{0178A2}
+\definecolor{cwo}{HTML}{53C3C4}
+\definecolor{cbase}{HTML}{EDF3F0}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=black,
+  citecolor=black,
+  urlcolor=black
+}
+
+\begin{document}
+
+\title{EdgeQGFed: 面向跨模态边缘智能的质量感知云边端协同学习框架}
+
+\maketitle
+
 \begin{abstract}
-边缘智能任务通常产生于大量分散终端，受限于带宽、算力、能耗和连接稳定性，难以直接采用传统端侧联邦训练；同时，边缘数据常具有 non-IID 分布和少标签特征。为此，本文提出 EdgeQGFed，一种面向通信受限边缘网络的云-边-端协同学习框架。该框架将主要训练负载上移至边缘服务器，利用云端图注意力机制对边缘节点间的语义关系和更新质量进行建模，并结合置信度加权伪标签学习缓解少标签训练问题。进一步地，EdgeQGFed 引入资源感知客户端采样和三层通信时延模型，以刻画带宽异构、客户端掉线和通信预算约束下的训练效率。实验将从模型精度、通信开销、time-to-accuracy 和鲁棒性等方面验证所提方法在跨模态边缘智能任务中的有效性。
+边缘智能任务中的数据通常分散在大量弱终端上，且可能呈现图像、传感序列和网络流量等不同形态。传统联邦学习要求客户端直接训练模型，在算力、能耗、带宽和连接稳定性受限的边缘网络中代价较高。本文提出 EdgeQGFed，一种通信高效的云边端协同学习框架。客户端仅承担轻量级数据参与，边缘服务器执行主要模型更新，云端通过质量感知图注意力机制协调跨边缘知识共享。EdgeQGFed 在边缘侧结合有标签监督、云边一致性约束和置信度加权伪标签学习，以适应少标签场景；在云端融合模型表征、类别原型和训练质量信号，生成个性化边缘更新和全局教师模型。同时，框架引入资源感知客户端采样和三层通信时延模型，在通信预算、带宽异构和客户端不稳定参与条件下评估训练效率。针对网络流量五分类中的类别不均衡问题，本文进一步采用类别均衡监督和分层标注采样，提高少数类识别能力。实验覆盖图像、传感序列和网络流量任务，结果表明 EdgeQGFed 能在复杂边缘网络条件下提升模型性能、通信效率和鲁棒性。
 \end{abstract}
 
-\section{预备知识与问题定义}
-\label{sec:problem}
+\begin{IEEEkeywords}
+边缘智能，分层联邦学习，云边端协同，图注意力，半监督学习，资源感知采样
+\end{IEEEkeywords}
 
-\subsection{云-边-端协同学习系统}
-\label{subsec:system}
+\section{Introduction}
 
-本文考虑一个云-边-端协同学习系统，其中包含一个云服务器、一组边缘服务器
-$\mathcal{E}=\{1,\ldots,E\}$，以及一组客户端设备
-$\mathcal{C}=\{1,\ldots,C\}$。每个客户端 $i$ 关联到一个边缘服务器
-$e(i)\in\mathcal{E}$。客户端 $i$ 拥有本地数据集
-$\mathcal{D}_i=\mathcal{D}_i^l\cup\mathcal{D}_i^u$，其中
-$\mathcal{D}_i^l$ 和 $\mathcal{D}_i^u$ 分别表示有标签数据和无标签数据。实际边缘智能任务中的数据形态并不单一，既可能来自图像类任务，也可能来自移动传感器和物联网时序任务。由于人工标注成本较高，有标签样本比例通常较低。
+大模型的发展提高了智能任务对数据、计算和模型更新能力的需求，也使训练过程更难完全依赖弱终端完成。在边缘网络中，数据持续产生于靠近用户和环境的位置。直接上传原始数据会带来通信开销和隐私风险，而让大量终端执行复杂训练又会受到算力、能耗、链路质量和连接稳定性的限制。因此，边缘智能需要一种能够将训练负载合理分配到云、边、端不同层级的协同学习机制。
 
-不同于传统联邦学习直接要求每个客户端执行本地模型训练，本文关注资源受限的边缘网络环境。在该环境中，客户端设备通常受限于算力、电量、无线带宽和连接稳定性，难以承担复杂模型的训练负载。因此，EdgeQGFed 将客户端视为轻量级数据参与者，将主要训练负载上移至边缘服务器，并由云端负责跨边缘节点的全局知识协调。该结构更符合真实边缘网络中客户端弱、边缘服务器相对强、云端具备全局协调能力的系统特征。
+联邦学习为分布式训练提供了重要思路，但传统联邦学习通常假设客户端能够周期性执行本地训练并上传模型更新。该假设在真实边缘环境中并不充分。一方面，弱客户端难以承担复杂模型训练；另一方面，链路异构、移动掉线和通信预算限制会降低训练稳定性。与此同时，边缘数据往往具有显著 non-IID 特征，且有标签样本有限。对于网络流量等类别不均衡任务，仅依赖整体准确率还可能掩盖少数类识别不足的问题。
 
-设 $f_\phi(\cdot)$ 表示特征编码器，$h_{\theta_e}(\cdot)$ 表示边缘服务器 $e$ 维护的分类器。对于图像类任务，$f_\phi$ 可由预训练视觉编码器实现；对于传感器时序任务，$f_\phi$ 可退化为恒等映射或轻量特征变换，由边缘分类器直接处理时序特征。本文中，编码器作为特征提取器使用，边缘分类器在训练过程中更新。云端维护一个教师分类器 $h_{\theta_c}(\cdot)$，并通过云端聚合机制从边缘模型中更新全局知识。
+云边端分层协同学习为上述问题提供了更可行的系统路径。客户端作为轻量级数据参与者，边缘服务器承担主要训练过程，云端负责跨边缘节点的全局协调。该范式降低了弱终端训练负担，也避免原始数据集中上传。然而，现有分层联邦方法通常将云端视为参数平均器，难以刻画不同边缘节点之间的语义关系和更新质量差异。在数据异构、标签稀缺和低质量伪标签共存的情况下，简单平均可能放大不可靠更新，引发负迁移。
 
-\subsection{网络约束下的学习目标}
-\label{subsec:objective}
+为此，本文提出 EdgeQGFed，一种面向跨模态边缘智能任务的通信高效云边端协同学习框架。EdgeQGFed 将训练负载上移至边缘服务器，并利用云端计算能力对边缘节点关系进行结构化建模。云端根据模型表征、类别原型、伪标签质量、标签比例和预测置信度构建质量感知图，通过图注意力权重实现选择性知识共享。边缘侧则结合监督学习、一致性学习和伪标签学习，在少标签条件下提升训练效率。
 
-本文目标是在跨模态数据、统计异质性、标签稀缺、带宽受限和客户端参与不稳定的条件下训练高效模型。在第 $t$ 轮通信中，系统选择一组客户端
-$\mathcal{S}_t\subseteq\mathcal{C}$ 参与训练，并由对应边缘服务器执行模型更新。客户端选择过程需要满足每轮通信预算约束：
+本文进一步面向真实网络约束设计资源感知客户端采样和三层通信时延模型。客户端选择同时考虑标签比例、数据规模、带宽、掉线概率和上传时延，在通信预算下优先选择单位收益更高的参与者。对于网络流量五分类任务，本文加入类别均衡监督和分层标注采样，以缓解 R2L、U2R 等少数类识别不足。本文的主要贡献如下：
+
+\begin{itemize}
+\item [1.] 我们提出 EdgeQGFed，一种面向跨模态边缘智能任务的云边端协同学习框架，将主要训练任务上移至边缘服务器，并由云端协调跨边缘知识共享。
+\item [2.] 我们设计质量感知图注意力聚合机制，融合模型表征、类别原型和训练质量信号，自适应建模边缘节点关系，缓解 non-IID 和低质量更新带来的负迁移。
+\item [3.] 我们设计资源感知客户端采样与三层通信时延模型，在通信预算下联合刻画数据价值、带宽差异、掉线风险和上传时延。
+\item [4.] 我们在图像、传感序列和网络流量任务上验证 EdgeQGFed，并针对类别不均衡网络流量任务引入类别均衡监督和分层标注采样。
+\end{itemize}
+\begin{figure}[t]
+\centering
+
+\begin{minipage}{0.241\textwidth}
+\centering
+\begin{tikzpicture}
+\begin{polaraxis}[
+    width=0.97\linewidth,
+    ymin=0, ymax=1,
+    ytick={0.2,0.4,0.6,0.8,1.0},
+    yticklabels={0.2,0.4,0.6,0.8,1.0},
+    xtick={90,18,306,234,162},
+    xticklabels={Cloud Acc,Edge Acc,Time,Comm.,Energy},
+    clip=false,
+    grid=both,
+    title={CIFAR-10},
+    title style={font=\scriptsize, yshift=-0.8em},
+    tick label style={font=\scriptsize},
+    xticklabel style={font=\scriptsize, align=center},
+    yticklabel style={font=\tiny, align=center},
+    legend to name=radarlegend,
+    legend style={
+        draw=none,
+        legend columns=0,
+        font=\scriptsize
+    },
+]
+\addplot+[
+    black,
+    mark=*,
+    mark size=2.2pt,
+    mark options={fill=cbase, draw=black}
+] coordinates {
+    (90,0.993) (18,0.983) (306,0.581) (234,1.000) (162,0.650) (90,0.993)
+};
+\addlegendentry{H-FedAvg}
+
+\addplot+[
+    black,
+    mark=square*,
+    mark size=2.2pt,
+    mark options={fill=cwo, draw=black}
+] coordinates {
+    (90,0.997) (18,0.998) (306,0.755) (234,0.906) (162,0.783) (90,0.997)
+};
+\addlegendentry{EdgeQGFed w/o RS}
+
+\addplot+[
+    black,
+    mark=triangle*,
+    mark size=2.5pt,
+    mark options={fill=cmain, draw=black}
+] coordinates {
+    (90,1.000) (18,1.000) (306,1.000) (234,0.906) (162,1.000) (90,1.000)
+};
+\addlegendentry{EdgeQGFed}
+\end{polaraxis}
+\end{tikzpicture}
+
+\vspace{0.2em}
+{\scriptsize (a)}
+\end{minipage}
+\hfill
+\begin{minipage}{0.241\textwidth}
+\centering
+\begin{tikzpicture}
+\begin{polaraxis}[
+    width=0.97\linewidth,
+    ymin=0, ymax=1,
+    ytick={0.2,0.4,0.6,0.8,1.0},
+    yticklabels={0.2,0.4,0.6,0.8,1.0},
+    xtick={90,18,306,234,162},
+    xticklabels={Cloud Acc,Edge Acc,Time,Comm.,Energy},
+    clip=false,
+    grid=both,
+    title={HARBox},
+    title style={font=\scriptsize, yshift=-0.8em},
+    tick label style={font=\scriptsize},
+    xticklabel style={font=\scriptsize, align=center},
+    yticklabel style={font=\tiny, align=center},
+]
+\addplot+[
+    black,
+    mark=*,
+    mark size=2.2pt,
+    mark options={fill=cbase, draw=black},
+    forget plot
+] coordinates {
+    (90,0.932) (18,0.878) (306,0.588) (234,0.900) (162,0.675) (90,0.932)
+};
+
+\addplot+[
+    black,
+    mark=square*,
+    mark size=2.2pt,
+    mark options={fill=cwo, draw=black},
+    forget plot
+] coordinates {
+    (90,0.982) (18,0.983) (306,0.769) (234,0.893) (162,0.797) (90,0.982)
+};
+
+\addplot+[
+    black,
+    mark=triangle*,
+    mark size=2.5pt,
+    mark options={fill=cmain, draw=black},
+    forget plot
+] coordinates {
+    (90,1.000) (18,1.000) (306,1.000) (234,1.000) (162,1.000) (90,1.000)
+};
+\end{polaraxis}
+\end{tikzpicture}
+
+\vspace{0.2em}
+{\scriptsize (b)}
+\end{minipage}
+
+\vspace{-2em}
+\ref{radarlegend}
+
+% \vspace{-0.3em}
+\caption{Radar comparison of model performance and system efficiency on (a) CIFAR-10 and (b) HARBox. Time, communication, and energy are reversely normalized so that larger values indicate better efficiency.}
+\label{fig:radar_ablation}
+\end{figure}
+\section{Preliminaries and Problem Formulation}
+\label{sec:preliminaries}
+
+\subsection{云边端协同系统}
+
+本文考虑一个云边端协同学习系统，包括一个云服务器、一组边缘服务器 $\mathcal{E}=\{1,\ldots,E\}$ 和一组客户端设备 $\mathcal{C}=\{1,\ldots,C\}$。每个客户端 $i$ 关联到一个边缘服务器 $e(i)\in\mathcal{E}$。客户端拥有本地数据集
+\begin{equation}
+    \mathcal{D}_i=\mathcal{D}_i^l\cup\mathcal{D}_i^u,
+\end{equation}
+其中 $\mathcal{D}_i^l$ 和 $\mathcal{D}_i^u$ 分别表示有标签数据和无标签数据。
+
+为适应跨模态边缘任务，样本 $x$ 可以来自不同数据形态，包括图像、传感序列和网络流量特征。本文使用统一的特征抽象表示不同输入。设 $f_\phi(\cdot)$ 为编码器，$h_{\theta_e}(\cdot)$ 为边缘服务器 $e$ 上的分类器，$h_{\theta_c}(\cdot)$ 为云端教师分类器。对于图像任务，$f_\phi$ 可由预训练轻量视觉编码器实现；对于传感序列和网络流量特征，$f_\phi$ 可以为恒等映射或轻量特征变换，由边缘分类器直接处理结构化特征。训练过程中主要更新边缘分类器和云端教师分类器，客户端不承担复杂模型训练。
+
+\subsection{通信预算与时延目标}
+
+在第 $t$ 轮训练中，系统选择客户端集合 $\mathcal{S}_t\subseteq\mathcal{C}$ 参与训练，活跃边缘服务器集合为 $\mathcal{E}_t$。每轮通信预算约束为
 \begin{equation}
     \sum_{i\in\mathcal{S}_t} m_i^{\mathrm{ce}}
     + \sum_{e\in\mathcal{E}_t} m_e^{\mathrm{ec}}
     + \sum_{e\in\mathcal{E}_t} m_e^{\mathrm{ceg}}
-    \le B_t,
+    \le B_t ,
     \label{eq:budget}
 \end{equation}
-其中，$m_i^{\mathrm{ce}}$ 表示客户端到边缘服务器的上传数据量，可对应原始小批量数据或轻量特征；$m_e^{\mathrm{ec}}$ 表示边缘服务器到云端的上传数据量，包含模型更新与边缘摘要；$m_e^{\mathrm{ceg}}$ 表示云端向边缘服务器下发的数据量，$B_t$ 表示第 $t$ 轮的通信预算，$\mathcal{E}_t$ 表示该轮中的活跃边缘服务器集合。
+其中 $m_i^{\mathrm{ce}}$ 表示客户端到边缘的上传量，$m_e^{\mathrm{ec}}$ 表示边缘到云端的上传量，$m_e^{\mathrm{ceg}}$ 表示云端到边缘的下发量，$B_t$ 为第 $t$ 轮通信预算。
 
-为了刻画云-边-端协同训练的系统开销，本文将每轮训练时延建模为：
+本文将每轮时延建模为
 \begin{equation}
     T_t = T_t^{\mathrm{c2e}}
         + T_t^{\mathrm{edge}}
@@ -42,54 +218,92 @@ $\mathcal{S}_t\subseteq\mathcal{C}$ 参与训练，并由对应边缘服务器�
         + T_t^{\mathrm{c2e\_down}},
     \label{eq:latency}
 \end{equation}
-其中，$T_t^{\mathrm{c2e}}$ 表示端到边上传时延，$T_t^{\mathrm{edge}}$ 表示边缘计算时延，$T_t^{\mathrm{e2c}}$ 表示边到云上传时延，$T_t^{\mathrm{cloud}}$ 表示云端聚合时延，$T_t^{\mathrm{c2e\_down}}$ 表示云到边下发时延。该建模使本文能够从模型精度、通信开销和 time-to-target-accuracy 等角度综合评估分层协同学习系统。
+其中 $T_t^{\mathrm{c2e}}$ 为端到边上传时延，$T_t^{\mathrm{edge}}$ 为边缘训练时延，$T_t^{\mathrm{e2c}}$ 为边到云上传时延，$T_t^{\mathrm{cloud}}$ 为云端聚合时延，$T_t^{\mathrm{c2e\_down}}$ 为云到边下发时延。除最终性能外，本文还关注 time-to-target accuracy，即模型首次达到目标精度所需的累计系统时延。
 
 \section{EdgeQGFed 方法}
 \label{sec:method}
 
-EdgeQGFed 是一种面向跨模态边缘智能任务的通信高效云-边-端协同学习框架。它主要包含三个核心组件：边缘侧半监督训练、云端质量感知图注意力聚合，以及网络约束下的资源感知客户端采样。为适应不同数据形态，EdgeQGFed 在数据增强、数据划分和聚合对象上采用模态自适应配置：图像任务使用图像增强与 Dirichlet 数据划分，传感器时序任务使用时序扰动和用户级划分；图像任务默认聚合可训练参数，时序任务可聚合完整模型状态以保留必要统计信息。
+本节给出 EdgeQGFed 的完整训练过程。EdgeQGFed 不是让客户端直接训练模型，而是将客户端、边缘服务器和云端分别承担不同职责。客户端负责提供被选中的数据或轻量特征；边缘服务器接收其覆盖范围内的客户端数据，并执行主要模型更新；云端不再简单平均边缘模型，而是根据边缘上传的质量摘要建模边缘节点关系，生成个性化边缘更新和全局教师模型。
 
-图~\ref{fig:fig1} 给出了 EdgeQGFed 的整体框架。客户端层根据带宽、能耗、掉线概率和数据价值进行资源感知采样，仅上传被选中的任务数据、特征或少量标签信息。边缘服务器接收来自其覆盖范围内客户端的数据后，结合有标签监督学习、云边一致性学习和置信度加权伪标签学习更新本地模型，并构建包含模型特征、类别原型和质量分数的边缘摘要。云端进一步根据边缘摘要构建质量感知图，利用图注意力权重刻画边缘节点之间的语义相关性和更新可靠性，从而生成个性化边缘更新并维护全局教师模型。该设计使训练负载主要由边缘服务器承担，同时将云端的全局协调能力与网络侧资源约束纳入统一框架。
+在第 $t$ 轮训练中，EdgeQGFed 先在客户端层进行资源感知采样，得到参与集合 $\mathcal{S}_t$。随后，每个活跃边缘服务器 $e$ 从其关联客户端集合中接收一个批次数据，利用有标签样本进行监督学习，利用无标签样本进行云边一致性学习和伪标签学习。边缘服务器完成若干步更新后，将模型更新、类别原型和训练质量信号组成摘要 $s_e$ 上传给云端。云端基于这些摘要构建质量感知图，通过图注意力计算边缘节点之间的知识共享权重，并将个性化参数下发给对应边缘服务器。下面按照这一轮训练的实际发生顺序展开说明。
+
+EdgeQGFed 的整体流程如图~\ref{fig:fig1} 所示。图中自下而上对应客户端采样、边缘训练和云端图聚合，自上而下对应云端向边缘服务器下发个性化更新。
 
 \begin{figure*}[t]
     \centering
-    \includegraphics[width=\textwidth]{figures/fig1.png}
-    \caption{EdgeQGFed 云-边-端协同学习框架。客户端层执行资源感知采样，边缘层进行半监督训练与摘要构建，云端通过质量感知图注意力实现跨边缘知识协调。}
+    \IfFileExists{fig1.pdf}
+    {\includegraphics[width=0.8\textwidth]{fig1.pdf}}
+    {\fbox{\parbox{0.78\textwidth}{\centering 图~\ref{fig:fig1} 占位：云端质量感知图注意力、边缘半监督训练和客户端资源感知采样。}}}
+    \caption{EdgeQGFed 云边端协同学习框架。客户端层执行资源感知采样，边缘层执行半监督训练与摘要构建，云端通过质量感知图注意力实现跨边缘知识协调。}
     \label{fig:fig1}
 \end{figure*}
+
+\subsection{资源感知客户端采样}
+\label{subsec:sampling}
+
+每轮训练首先要决定哪些客户端参与。若仅随机选择客户端，系统可能把通信预算消耗在低带宽、高掉线或数据贡献较低的设备上。为此，EdgeQGFed 为客户端 $i$ 定义资源感知效用：
+\begin{equation}
+    U_i =
+    \frac{
+    \eta_l l_i + \eta_d d_i + \eta_b b_i^{\mathrm{up}} + \eta_a a_i
+    }
+    {(T_i^{\mathrm{up}})^{\eta_t}},
+    \label{eq:client_utility}
+\end{equation}
+其中 $l_i$ 表示有标签比例，$d_i$ 表示归一化数据规模，$b_i^{\mathrm{up}}$ 表示归一化上行带宽，$a_i=1-p_i^{\mathrm{drop}}$ 表示客户端可用性，$T_i^{\mathrm{up}}$ 表示估计上传时延。$\eta_l$、$\eta_d$、$\eta_b$、$\eta_a$ 和 $\eta_t$ 分别控制数据质量、数据规模、链路带宽、可用性和时延代价的影响。
+
+系统按照 $U_i$ 对候选客户端排序，并在每个边缘服务器的并行上传限制和式~\eqref{eq:budget} 的通信预算下选择 $\mathcal{S}_t$。这样做的目的不是单纯选择数据最多的客户端，而是在有限通信资源下优先选择“数据有价值且链路代价可接受”的参与者。
 
 \subsection{边缘侧半监督训练}
 \label{subsec:edge_training}
 
-本文用 $x$ 表示任意边缘任务样本，其可以是图像样本，也可以是传感器时序样本。编码器 $f_\phi(\cdot)$ 将不同形态输入映射到特征空间，后续监督学习、一致性学习和原型计算均在该特征空间中进行。弱增强 $a_w(\cdot)$ 与强增强 $a_s(\cdot)$ 由数据形态决定：图像任务采用裁剪、旋转、颜色扰动等增强，数字类任务避免翻转操作，传感器时序任务采用噪声扰动、幅值缩放和时间遮挡。
-
-在第 $t$ 轮训练中，每个活跃边缘服务器 $e$ 接收其覆盖范围内被选中客户端上传的数据批次。对于输入样本 $x$，编码器生成特征表示
-$z=f_\phi(x)$，边缘分类器输出预测 logits $h_{\theta_e}(z)$。对于有标签样本，边缘服务器最小化监督交叉熵损失：
+完成客户端采样后，边缘服务器 $e$ 接收其关联的活跃客户端批次 $\mathcal{B}_e=\mathcal{B}_e^l\cup\mathcal{B}_e^u$。其中 $\mathcal{B}_e^l$ 为有标签样本，$\mathcal{B}_e^u$ 为无标签样本。边缘服务器首先通过编码器得到样本表示 $z=f_\phi(x)$，再由边缘分类器 $h_{\theta_e}$ 输出预测。对有标签样本，基本监督损失为
 \begin{equation}
     \mathcal{L}_{\mathrm{sup}}^e =
     \frac{1}{|\mathcal{B}_e^l|}
     \sum_{(x,y)\in\mathcal{B}_e^l}
-    \ell_{\mathrm{ce}}\left(h_{\theta_e}(f_\phi(x)), y\right),
+    \ell_{\mathrm{ce}}\left(h_{\theta_e}(f_\phi(x)), y\right).
     \label{eq:sup_loss}
 \end{equation}
-其中，$\mathcal{B}_e^l$ 表示边缘服务器 $e$ 当前批次中的有标签样本集合。
 
-对于无标签样本，EdgeQGFed 利用云端教师模型和边缘模型之间的一致性进行学习。给定弱增强样本 $x^w=a_w(x)$ 和强增强样本 $x^s=a_s(x)$，边缘模型和云端模型的预测分别为：
+对于 NSL-KDD 这类类别高度不均衡的网络流量任务，少数类样本在整体准确率中贡献较小，普通交叉熵容易偏向 Normal 和 DoS 等多数类。因此，本文在该类任务中使用类别均衡监督损失：
 \begin{equation}
-    p_e = \mathrm{softmax}\left(h_{\theta_e}(f_\phi(x^s))/T_p\right), \quad
-    p_c = \mathrm{softmax}\left(h_{\theta_c}(f_\phi(x^w))/T_p\right),
-    \label{eq:edge_cloud_pred}
+    \mathcal{L}_{\mathrm{sup}}^e =
+    \frac{1}{|\mathcal{B}_e^l|}
+    \sum_{(x,y)\in\mathcal{B}_e^l}
+    \omega_y \ell_{\mathrm{ce}}\left(h_{\theta_e}(f_\phi(x)), y\right),
+    \label{eq:weighted_sup_loss}
 \end{equation}
-其中，$T_p$ 表示伪标签温度。云边一致性损失定义为：
+其中 $\omega_y$ 为类别 $y$ 的权重。设有标签样本中类别 $k$ 的计数为 $n_k$，类别权重定义为
+\begin{equation}
+    \omega_k =
+    \mathrm{clip}\left(
+    \frac{
+    \left(\frac{1}{K}\sum_{j=1}^{K}n_j\right)^{\alpha_w}
+    }{
+    (n_k+\epsilon)^{\alpha_w}
+    },
+    \omega_{\min}, \omega_{\max}
+    \right),
+    \label{eq:class_weight}
+\end{equation}
+其中 $K$ 为类别数，$\alpha_w$ 控制重加权强度，$\omega_{\min}$ 和 $\omega_{\max}$ 防止权重过小或过大。该设计只在类别不均衡任务中启用，用于提升 macro-F1 和少数类 recall。
+
+由于边缘侧通常只有少量标签，无标签样本也需要被利用。EdgeQGFed 使用云端教师模型指导边缘学生模型。给定弱增强样本 $a_w(x)$ 和强增强样本 $a_s(x)$，边缘模型和云端教师模型分别输出
+\begin{align}
+    p_e &= \mathrm{softmax}\left(h_{\theta_e}(f_\phi(a_s(x)))/T_p\right), \nonumber\\
+    p_c &= \mathrm{softmax}\left(h_{\theta_c}(f_\phi(a_w(x)))/T_p\right),
+    \label{eq:edge_cloud_pred}
+\end{align}
+其中 $T_p$ 为伪标签温度。边缘模型应在强增强下与云端教师在弱增强下保持一致，因此一致性损失为
 \begin{equation}
     \mathcal{L}_{\mathrm{con}}^e =
-    d(p_e, p_c),
+    d(p_e,p_c),
     \label{eq:consistency_loss}
 \end{equation}
-其中，$d(\cdot,\cdot)$ 可以采用均方误差、$\ell_1$ 距离或 KL 散度。实践中，一致性损失可进一步由置信度门控，只在云端与边缘预测较可靠的样本上计算，以避免早期低质量预测放大噪声。
+其中 $d(\cdot,\cdot)$ 可取均方误差、$\ell_1$ 距离或 KL 散度。训练早期预测不稳定时，EdgeQGFed 可通过置信度门控只对可靠样本计算一致性损失。
 
-为了降低低质量伪标签带来的确认偏差，EdgeQGFed 同时利用边缘置信度和云端置信度对伪标签进行加权。记
-$\hat{y}_e=\arg\max p_e$，$\hat{y}_c=\arg\max p_c$，$q_e=\max p_e$，$q_c=\max p_c$。当边缘预测与云端预测一致时，该样本才参与伪标签训练，其权重定义为：
+仅使用一致性约束仍然不能明确给出无标签样本的类别监督。为此，EdgeQGFed 进一步使用置信度加权伪标签。设 $\hat{y}_e=\arg\max p_e$，$\hat{y}_c=\arg\max p_c$，$q_e=\max p_e$，$q_c=\max p_c$。只有当边缘预测和云端预测一致时，无标签样本才被用于伪标签训练，其权重为
 \begin{equation}
     w(x) =
     \mathbf{1}[\hat{y}_e=\hat{y}_c]
@@ -99,16 +313,16 @@ $\hat{y}_e=\arg\max p_e$，$\hat{y}_c=\arg\max p_c$，$q_e=\max p_e$，$q_c=\max
     \sigma\left(\frac{q_c-\tau_c}{\gamma}\right),
     \label{eq:pseudo_weight}
 \end{equation}
-其中，$\tau_e$ 和 $\tau_c$ 分别表示边缘置信度阈值和云端置信度阈值，$\gamma$ 表示权重平滑温度，$\sigma(\cdot)$ 表示 sigmoid 函数。加权伪标签损失为：
+其中 $\tau_e$ 和 $\tau_c$ 分别为边缘和云端置信度阈值，$\gamma$ 为平滑温度。对应的伪标签损失为
 \begin{equation}
     \mathcal{L}_{\mathrm{pl}}^e =
     \frac{\sum_{x\in\mathcal{B}_e^u} w(x)
-    \ell_{\mathrm{ce}}\left(h_{\theta_e}(f_\phi(x^s)), \hat{y}_c\right)}
+    \ell_{\mathrm{ce}}\left(h_{\theta_e}(f_\phi(a_s(x))), \hat{y}_c\right)}
     {\sum_{x\in\mathcal{B}_e^u} w(x)+\epsilon}.
     \label{eq:pseudo_loss}
 \end{equation}
 
-因此，边缘服务器 $e$ 的总体训练目标为：
+最终，边缘服务器 $e$ 的训练目标为
 \begin{equation}
     \mathcal{L}_e =
     \mathcal{L}_{\mathrm{sup}}^e
@@ -116,33 +330,45 @@ $\hat{y}_e=\arg\max p_e$，$\hat{y}_c=\arg\max p_c$，$q_e=\max p_e$，$q_c=\max
     + \lambda_p \mathcal{L}_{\mathrm{pl}}^e,
     \label{eq:edge_loss}
 \end{equation}
-其中，$\lambda_t$ 通过 warm-up 策略逐渐增大，$\lambda_p$ 控制伪标签损失权重。
+其中 $\lambda_t$ 通过 warm-up 逐步增大，$\lambda_p$ 控制伪标签损失权重。对于网络流量五分类任务，伪标签启动更晚且阈值更高，以避免多数类高置信伪标签过早压制 R2L、U2R 等少数类。
+
+\subsection{少标签与类别不均衡处理}
+\label{subsec:stratified_label}
+
+在少标签设置下，若每个客户端随机选择有标签样本，少数类可能在训练中几乎不可见。EdgeQGFed 因此在类别不均衡任务中使用分层标注采样。对于客户端 $i$ 的本地索引集合 $\mathcal{I}_i$，其标注预算为
+\begin{equation}
+    L_i=\min\left(|\mathcal{I}_i|,\max(\lfloor r|\mathcal{I}_i|\rfloor,L_{\min})\right),
+    \label{eq:label_budget}
+\end{equation}
+其中 $r$ 为标签比例，$L_{\min}$ 为每个客户端最小标注数。系统先从客户端本地可见类别中尽量保留代表性有标签样本，再用随机样本补齐预算。该策略不改变总体标签比例，只提升有标签样本的类别覆盖度。
+
+进一步地，对于 NSL-KDD 五分类任务，训练批次中会保留一部分有标签样本并按类别权重重复抽样，使 R2L、U2R 等少数类在边缘监督训练中出现得更频繁。该增强只作用于训练采样过程，不改变测试集分布，因此更适合用 macro-F1、macro recall 和每类 recall 评估其效果。
 
 \subsection{边缘摘要构建}
 \label{subsec:summary}
 
-边缘服务器完成本地更新后，会向云端上传质量感知摘要。该摘要不包含原始数据，而是由模型更新、类别原型、伪标签质量、有标签比例、预测置信度和批次规模组成：
+边缘服务器完成本地更新后，不向云端上传原始数据，而是上传能够反映模型状态和训练质量的边缘摘要：
 \begin{equation}
     s_e = \{\theta_e, P_e, n_e, \rho_e, r_e, c_e, b_e\}.
     \label{eq:summary}
 \end{equation}
-其中，$\theta_e$ 表示边缘上传的聚合对象，可根据任务形态选取为可训练参数或完整模型状态；$P_e$ 表示类别原型矩阵，$n_e$ 表示每个类别对应的原型样本数，$\rho_e$ 表示平均伪标签权重，$r_e$ 表示有标签样本比例，$c_e$ 表示平均云端置信度，$b_e$ 表示该边缘节点处理的样本数。对于类别 $k$，其原型计算为：
+其中 $\theta_e$ 表示边缘上传的聚合对象，$P_e$ 为类别原型矩阵，$n_e$ 为各类别原型计数，$\rho_e$ 为平均伪标签权重，$r_e$ 为有标签样本比例，$c_e$ 为平均云端置信度，$b_e$ 为本轮处理样本数。
+
+类别原型用于描述边缘节点当前看到的数据语义。对于类别 $k$，原型定义为
 \begin{equation}
     P_e^k =
     \frac{1}{|\mathcal{B}_{e,k}^l|}
     \sum_{(x,y)\in\mathcal{B}_{e,k}^l} f_\phi(x),
     \label{eq:prototype}
 \end{equation}
-其中，$\mathcal{B}_{e,k}^l$ 表示边缘服务器 $e$ 中属于类别 $k$ 的有标签样本集合。
+其中 $\mathcal{B}_{e,k}^l$ 表示边缘服务器 $e$ 当前批次中属于类别 $k$ 的有标签样本集合。若某个类别在当前边缘批次中不存在，则该类别原型计数为零，并在云端聚合时降低其贡献。通过上传摘要而非原始数据，EdgeQGFed 在保留跨边缘知识协调所需信息的同时降低通信和隐私开销。
 
 \subsection{云端质量感知图注意力聚合}
 \label{subsec:graph_aggregation}
 
-本文将云端视为具有结构化知识建模能力的全局协调器，而不是简单的参数平均器。云端根据活跃边缘节点上传的摘要构建质量感知图，并通过图注意力机制实现跨边缘节点的选择性知识共享。该设计适用于不同数据形态下的边缘任务，因为图关系由模型表征、类别原型和训练质量信号共同决定，而不依赖某一特定输入模态。云端质量感知图注意力聚合的具体流程如算法~\ref{alg:graph_aggregation} 所示。
+云端接收活跃边缘摘要后，需要判断哪些边缘节点之间更适合共享知识。直接平均所有边缘更新会忽略数据分布、标签质量和伪标签可靠性的差异。EdgeQGFed 将活跃边缘节点视为图中的节点，并根据边缘摘要构造质量感知图。
 
-对于边缘节点 $e$，云端首先根据其模型参数计算模型签名 $u_e$。该签名由各层参数的均值、标准差和归一化范数等统计量拼接得到。同时，云端根据类别原型矩阵计算原型签名 $v_e$，即将按类别样本数加权后的原型矩阵展平并归一化。
-
-对于两个活跃边缘节点 $i$ 和 $j$，云端计算其注意力得分：
+对于边缘节点 $e$，云端从模型参数提取模型签名 $u_e$，从类别原型提取原型签名 $v_e$。对于两个活跃边缘节点 $i$ 和 $j$，注意力得分为
 \begin{align}
     a_{ij} =
     &\ \mathrm{cos}(u_i,u_j)
@@ -153,26 +379,23 @@ $\hat{y}_e=\arg\max p_e$，$\hat{y}_c=\arg\max p_c$，$q_e=\max p_e$，$q_c=\max
     + \beta \mathbf{1}[i=j],
     \label{eq:attention_score}
 \end{align}
-其中，$\alpha_p$、$\alpha_q$、$\alpha_r$ 和 $\alpha_c$ 分别控制类别原型相似性、伪标签可靠性、有标签比例相似性和预测置信度相似性的贡献，$\beta$ 表示自连接偏置，用于保留边缘节点自身的个性化知识。
+其中模型签名和原型签名刻画边缘节点的语义相似性，$\rho_i$、$r_i$ 和 $c_i$ 分别反映伪标签质量、标签比例和预测置信度。$\alpha_p$、$\alpha_q$、$\alpha_r$ 和 $\alpha_c$ 控制不同质量信号的贡献，$\beta$ 为自连接偏置，用于保留边缘节点自身知识。
 
-随后，云端通过温度缩放 softmax 得到图注意力矩阵：
+云端随后对注意力得分进行归一化，得到图注意力矩阵：
 \begin{equation}
     A_{ij} =
     \frac{\exp(a_{ij}/\tau_g)}
     {\sum_{k\in\mathcal{E}_t}\exp(a_{ik}/\tau_g)},
     \label{eq:attention_matrix}
 \end{equation}
-其中，$\tau_g$ 表示图注意力温度。为避免注意力权重为零，本文对注意力矩阵设置最小权重下界，并进行行归一化。
-
-基于注意力矩阵，云端为每个边缘节点生成个性化参数：
+其中 $\tau_g$ 为图注意力温度。$A_{ij}$ 越大，表示边缘节点 $i$ 在生成自身个性化模型时越应吸收来自边缘节点 $j$ 的知识。因此，云端为每个目标边缘节点生成个性化参数
 \begin{equation}
     \tilde{\theta}_i =
     \sum_{j\in\mathcal{E}_t} A_{ij}\theta_j.
     \label{eq:personalized_param}
 \end{equation}
-相比 FedAvg 对所有边缘更新进行统一平均，该方式能够使边缘节点更多吸收来自可靠且语义相似节点的知识，同时降低低质量或分布不匹配更新的影响。
 
-云端全局参数进一步通过可靠性感知加权聚合得到：
+除了个性化边缘参数，云端还需要维护全局教师模型。EdgeQGFed 根据边缘处理样本数和伪标签质量计算全局聚合权重：
 \begin{equation}
     \bar{\theta} =
     \sum_{i\in\mathcal{E}_t}
@@ -183,102 +406,77 @@ $\hat{y}_e=\arg\max p_e$，$\hat{y}_c=\arg\max p_c$，$q_e=\max p_e$，$q_c=\max
     {\sum_{j\in\mathcal{E}_t} b_j(\rho_j+1)}.
     \label{eq:global_param}
 \end{equation}
-
-最后，云端教师模型通过指数滑动平均更新：
+若采用 AEMA，云端教师模型更新为
 \begin{equation}
     \theta_c \leftarrow
     \mu \theta_c + (1-\mu)\bar{\theta},
     \label{eq:ema}
 \end{equation}
-其中，$\mu$ 表示 AEMA 衰减系数。当采用 FedAvg 更新时，上式退化为直接用 $\bar{\theta}$ 替换云端教师参数。云端随后将个性化参数 $\tilde{\theta}_i$ 下发至对应边缘服务器；对于本轮未生成个性化参数的边缘节点，云端下发全局参数 $\bar{\theta}$ 作为回退同步，以避免边缘模型长期陈旧。
+其中 $\mu$ 为平滑系数。若采用 FedAvg，则直接使用 $\bar{\theta}$ 替换云端教师模型。最后，云端将 $\tilde{\theta}_i$ 下发给对应边缘服务器；对于本轮未得到个性化参数的边缘节点，云端下发全局回退参数，以避免边缘模型长期陈旧。
 
 \begin{algorithm}[t]
 \caption{云端质量感知图注意力聚合}
 \label{alg:graph_aggregation}
 \begin{algorithmic}[1]
-\REQUIRE 活跃边缘摘要集合 $\mathcal{S}^{\mathrm{edge}}_t=\{s_e\}_{e\in\mathcal{E}_t}$，图温度 $\tau_g$，权重系数 $\alpha_p,\alpha_q,\alpha_r,\alpha_c$，自连接偏置 $\beta$，AEMA 衰减系数 $\mu$
-\ENSURE 云端教师模型 $\theta_c$，个性化边缘参数集合 $\{\tilde{\theta}_e\}_{e\in\mathcal{E}_t}$
+\REQUIRE 活跃边缘摘要 $\mathcal{S}^{\mathrm{edge}}_t=\{s_e\}_{e\in\mathcal{E}_t}$，图温度 $\tau_g$，权重系数 $\alpha_p,\alpha_q,\alpha_r,\alpha_c$，自连接偏置 $\beta$
+\ENSURE 云端教师模型 $\theta_c$，个性化边缘参数 $\{\tilde{\theta}_e\}_{e\in\mathcal{E}_t}$
 \FOR{each active edge $e\in\mathcal{E}_t$}
-    \STATE 根据边缘参数 $\theta_e$ 提取模型签名 $u_e$
-    \STATE 根据类别原型 $P_e$ 和原型计数 $n_e$ 提取原型签名 $v_e$
+    \STATE 提取模型签名 $u_e$ 和原型签名 $v_e$
 \ENDFOR
 \FOR{each pair of active edges $(i,j)$}
-    \STATE 根据式~\eqref{eq:attention_score} 计算质量感知注意力得分 $a_{ij}$
+    \STATE 根据式~\eqref{eq:attention_score} 计算质量感知得分 $a_{ij}$
 \ENDFOR
-\STATE 根据式~\eqref{eq:attention_matrix} 对注意力得分进行 softmax 归一化，得到图注意力矩阵 $A$
+\STATE 根据式~\eqref{eq:attention_matrix} 得到注意力矩阵 $A$
 \FOR{each target edge $i\in\mathcal{E}_t$}
-    \STATE 根据式~\eqref{eq:personalized_param} 计算个性化参数 $\tilde{\theta}_i=\sum_{j\in\mathcal{E}_t}A_{ij}\theta_j$
+    \STATE 根据式~\eqref{eq:personalized_param} 生成个性化参数 $\tilde{\theta}_i$
 \ENDFOR
-\STATE 根据式~\eqref{eq:global_param} 计算可靠性感知全局参数 $\bar{\theta}$
-\STATE 根据式~\eqref{eq:ema} 更新云端教师模型 $\theta_c\leftarrow\mu\theta_c+(1-\mu)\bar{\theta}$
-\STATE 将个性化参数 $\{\tilde{\theta}_e\}_{e\in\mathcal{E}_t}$ 下发至对应边缘服务器，未个性化更新的边缘节点接收全局参数 $\bar{\theta}$
+\STATE 根据式~\eqref{eq:global_param} 和式~\eqref{eq:ema} 更新云端教师模型
+\STATE 下发个性化参数或全局回退参数到边缘服务器
 \end{algorithmic}
 \end{algorithm}
-
-\subsection{资源感知客户端采样}
-\label{subsec:sampling}
-
-为了提升通信效率，EdgeQGFed 在客户端选择阶段同时考虑数据价值和网络状态。对于客户端 $i$，定义资源感知效用分数：
-\begin{equation}
-    U_i =
-    \frac{
-    \eta_l l_i + \eta_d d_i + \eta_b b_i^{\mathrm{up}} + \eta_a a_i
-    }
-    {(T_i^{\mathrm{up}})^{\eta_t}},
-    \label{eq:client_utility}
-\end{equation}
-其中，$l_i$ 表示客户端有标签比例，$d_i$ 表示归一化数据规模，$b_i^{\mathrm{up}}$ 表示归一化上行带宽，$a_i=1-p_i^{\mathrm{drop}}$ 表示可用性分数，$T_i^{\mathrm{up}}$ 表示估计上传时延。$\eta_l$、$\eta_d$、$\eta_b$、$\eta_a$ 和 $\eta_t$ 分别控制数据质量、数据规模、链路带宽、可用性和时延代价的重要性。
-
-在每轮训练中，EdgeQGFed 优先选择效用较高的客户端，同时满足每个边缘服务器的最大并行上传数和式~\eqref{eq:budget} 中的通信预算约束。该策略能够避免将有限通信资源消耗在数据价值低、链路质量差或掉线概率高的客户端上，从而提高单位通信开销下的训练收益。
 
 \subsection{整体训练流程}
 \label{subsec:procedure}
 
-EdgeQGFed 的整体训练流程如算法~\ref{alg:edgeqgfed} 所示。首先，系统根据任务形态确定增强、划分和聚合模式，并在通信预算和链路约束下执行资源感知客户端采样。被选中的活跃客户端将数据或特征上传至其关联边缘服务器。随后，边缘服务器基于监督损失、云边一致性损失和置信度加权伪标签损失更新本地分类器。接着，活跃边缘服务器向云端上传边缘摘要。云端根据摘要构建质量感知图，计算图注意力权重，生成边缘个性化参数，并通过 AEMA 或 FedAvg 更新云端教师模型。最后，云端将个性化参数或全局回退参数下发至边缘服务器，进入下一轮训练。
+综合上述步骤，EdgeQGFed 的一轮训练可以概括为“选客户端、边缘训练、上传摘要、云端图聚合、下发更新”。算法~\ref{alg:edgeqgfed} 给出完整流程。该流程体现了本文的核心思想：客户端只轻量参与，边缘服务器承担主要训练，云端利用质量感知图注意力进行跨边缘协同。
 
 \begin{algorithm}[t]
-\caption{EdgeQGFed 云-边-端协同训练流程}
+\caption{EdgeQGFed 云边端协同训练流程}
 \label{alg:edgeqgfed}
 \begin{algorithmic}[1]
-\REQUIRE 客户端集合 $\mathcal{C}$，边缘服务器集合 $\mathcal{E}$，云端教师模型 $\theta_c$，边缘模型集合 $\{\theta_e\}_{e\in\mathcal{E}}$，通信预算 $B_t$，总训练轮数 $T$
-\ENSURE 云端教师模型 $\theta_c$，个性化边缘模型集合 $\{\theta_e\}_{e\in\mathcal{E}}$
+\REQUIRE 客户端集合 $\mathcal{C}$，边缘服务器集合 $\mathcal{E}$，云端教师模型 $\theta_c$，边缘模型 $\{\theta_e\}_{e\in\mathcal{E}}$，通信预算 $B_t$，总训练轮数 $T$
+\ENSURE 云端教师模型 $\theta_c$，边缘模型 $\{\theta_e\}_{e\in\mathcal{E}}$
 \FOR{$t=1$ to $T$}
-    \STATE 根据任务形态设置增强、数据划分和聚合对象
-    \STATE 云端根据通信预算、链路带宽、掉线概率和数据质量执行资源感知客户端采样，得到 $\mathcal{S}_t$
-    \FOR{each edge server $e\in\mathcal{E}$ in parallel}
-        \STATE 获取与边缘 $e$ 关联的活跃客户端集合 $\mathcal{S}_{t,e}$
-        \IF{$\mathcal{S}_{t,e}=\emptyset$}
-            \STATE 跳过边缘服务器 $e$
-        \ENDIF
-        \STATE 客户端上传当前批次数据或特征至边缘服务器 $e$
-        \STATE 边缘服务器利用式~\eqref{eq:sup_loss} 计算有标签监督损失 $\mathcal{L}_{\mathrm{sup}}^e$
-        \STATE 边缘服务器利用式~\eqref{eq:consistency_loss} 计算云边一致性损失 $\mathcal{L}_{\mathrm{con}}^e$
-        \STATE 根据式~\eqref{eq:pseudo_weight} 计算伪标签权重，并利用式~\eqref{eq:pseudo_loss} 计算伪标签损失 $\mathcal{L}_{\mathrm{pl}}^e$
-        \STATE 通过式~\eqref{eq:edge_loss} 更新边缘模型参数 $\theta_e$
-        \IF{当前轮满足云端聚合间隔}
-            \STATE 构建边缘摘要 $s_e=\{\theta_e,P_e,n_e,\rho_e,r_e,c_e,b_e\}$ 并上传至云端
+    \STATE 根据式~\eqref{eq:client_utility} 执行资源感知客户端采样，得到 $\mathcal{S}_t$
+    \FOR{each active edge server $e\in\mathcal{E}_t$}
+        \STATE 接收关联客户端上传的数据或特征，构造 $\mathcal{B}_e^l$ 和 $\mathcal{B}_e^u$
+        \STATE 根据式~\eqref{eq:sup_loss} 或式~\eqref{eq:weighted_sup_loss} 计算监督损失
+        \STATE 根据式~\eqref{eq:consistency_loss} 和式~\eqref{eq:pseudo_loss} 计算无标签损失
+        \STATE 根据式~\eqref{eq:edge_loss} 更新边缘模型 $\theta_e$
+        \IF{满足云端聚合间隔}
+            \STATE 根据式~\eqref{eq:summary} 构建并上传边缘摘要 $s_e$
         \ENDIF
     \ENDFOR
-    \IF{收到边缘摘要集合 $\mathcal{S}^{\mathrm{edge}}_t$}
-        \STATE 云端调用算法~\ref{alg:graph_aggregation} 执行质量感知图注意力聚合
-        \STATE 云端更新教师模型 $\theta_c$，并向边缘服务器下发个性化参数或全局回退参数
+    \IF{云端收到边缘摘要}
+        \STATE 调用算法~\ref{alg:graph_aggregation} 执行质量感知图注意力聚合
+        \STATE 更新云端教师模型，并下发个性化边缘参数
     \ENDIF
 \ENDFOR
 \end{algorithmic}
 \end{algorithm}
 
-通过结合分层训练负载分配、云端图注意力协同和网络感知客户端采样，EdgeQGFed 旨在解决跨模态边缘智能任务中的核心问题：在带宽受限、链路异构、标签稀缺和客户端参与不稳定条件下，实现更高效、更稳健的协同学习。
-
 \section{实验评估}
 \label{sec:evaluation}
 
-本节从学习性能和网络系统效率两个角度评估 EdgeQGFed。与只关注最终分类精度的实验设置不同，本文同时报告通信开销、三层训练时延、time-to-accuracy、客户端不稳定参与下的鲁棒性，以及各个系统组件对整体性能的贡献。除非特别说明，所有方法均在相同的云-边-端拓扑、数据划分、通信预算和训练轮数下比较。本文报告训练过程中达到的最佳测试性能，并记录达到该性能时对应的通信开销和估计时延。
+本节从跨模态学习性能和网络系统效率两个角度评估 EdgeQGFed。实验重点不是证明某一数据集上的最高集中式精度，而是验证该框架在图像、传感序列和网络流量任务中，能否在少标签、non-IID、通信受限和客户端不稳定参与条件下保持有效。除跨模态总体性能实验外，系统开销、鲁棒性和消融实验仅选择代表性数据集进行分析，以避免重复展示相同趋势。
 
 \subsection{实验设置}
 \label{subsec:exp_setup}
 
 \textbf{数据集与任务。}
-本文使用四个公开数据集进行评估，覆盖传感器时序任务和图像类任务。HARBox 作为主要边缘智能数据集，其用户级传感器记录能够体现真实客户端差异。SVHN、CIFAR-10 和 CIFAR-100 用于验证 EdgeQGFed 在图像任务上的泛化能力，其中 CIFAR-100 用于评估类别数较多时的训练稳定性。对于 HARBox，本文按照用户进行数据划分；对于 SVHN、CIFAR-10 和 CIFAR-100，本文采用 Dirichlet non-IID 划分，并重点报告 $\alpha=0.3$ 和 $\alpha=0.1$ 下的结果。
+本文使用四个公开数据集进行评估，覆盖图像、传感序列和网络流量三类边缘智能任务。CIFAR-10 和 CIFAR-100 用于评估图像任务下的表征迁移与类别扩展能力；HARBox 用于评估用户级传感序列数据上的边缘协同学习；NSL-KDD 用于评估网络流量任务。对于 CIFAR-10 和 CIFAR-100，本文采用 Dirichlet non-IID 划分，并重点报告 $\alpha=0.3$ 和 $\alpha=0.1$；HARBox 按用户划分。
+
+对于 NSL-KDD，本文首先对连续特征进行归一化，并将协议、服务和连接状态等离散字段编码为数值特征。原始二分类设置通常将所有攻击合并为 Attack，该任务在预实验中准确率可接近 $99\%$，难以充分反映边缘节点之间的攻击类型差异。为避免该任务过于饱和，本文将其转换为 Normal、DoS、Probe、R2L 和 U2R 五分类任务，并按客户端级 non-IID 方式划分。该设置更适合评估个性化边缘模型，因为不同边缘节点可能面对不同攻击组合，简单全局平均容易偏向多数类，而个性化更新能够更直接地反映局部流量分布。
 
 \begin{table}[t]
 \centering
@@ -288,158 +486,254 @@ EdgeQGFed 的整体训练流程如算法~\ref{alg:edgeqgfed} 所示。首先，�
 \toprule
 数据集 & 数据形态 & 类别数 & 划分方式 & 标签比例 \\
 \midrule
+ CIFAR-10 & 图像 & 10 & Dirichlet & 0.1 \\
+ CIFAR-100 & 图像 & 100 & Dirichlet & 0.1 \\
 HARBox & 传感器时序 & 5 & 用户级划分 & 0.1 \\
-SVHN & 图像 & 10 & Dirichlet & 0.1 \\
-CIFAR-10 & 图像 & 10 & Dirichlet & 0.1 \\
-CIFAR-100 & 图像 & 100 & Dirichlet & 0.1 \\
+NSL-KDD & 网络流量 & 5 & Dirichlet & 0.1 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \textbf{系统配置。}
-默认系统包含一个云服务器、多个边缘服务器和若干客户端。图像数据集默认设置为 4 个边缘服务器和 128 个客户端；HARBox 使用用户级客户端划分。每轮训练中，云端根据采样策略选择部分客户端，活跃客户端将当前批次数据或特征上传到对应边缘服务器。默认链路设置采用异构 edge profile，并在后续实验中进一步改变带宽、通信预算和客户端掉线率。
+默认系统包含一个云服务器、多个边缘服务器和若干客户端。图像任务默认设置为 4 个边缘服务器和 128 个客户端；HARBox 和 NSL-KDD 默认设置为 5 个边缘服务器和 100 个客户端。每轮训练中，云端根据采样策略选择部分客户端，活跃客户端将当前批次数据或特征上传到对应边缘服务器。默认链路采用异构 edge profile，并在系统实验中进一步改变通信预算、带宽分布和客户端掉线率。
 
 \textbf{对比方法。}
-本文比较 EdgeQGFed 与多种分层联邦学习基线。H-FedAvg 表示不使用图注意力和伪标签学习的基础分层 FedAvg。H-FedAvg+PL 在 H-FedAvg 上加入伪标签训练。EdgeQGFed w/o Graph 去除云端图注意力聚合，改用加权参数平均。EdgeQGFed w/o RS 将资源感知采样替换为均衡采样。EdgeQGFed w/o PL 去除伪标签损失，仅保留监督训练和云边一致性训练。完整 EdgeQGFed 同时使用资源感知客户端采样、边缘侧半监督训练和云端质量感知图注意力聚合。
+总体性能实验比较 EdgeQGFed 与多类代表性联邦学习方法，包括同步聚合、近端正则、异步更新、缓冲式聚合、个性化联邦学习和图结构个性化方法。系统效率和消融实验则聚焦于少量关键对照，包括 H-FedAvg、H-FedAvg+PL、EdgeQGFed w/o Graph、EdgeQGFed w/o RS、EdgeQGFed w/o PL 和完整 EdgeQGFed，以分析本文各模块的贡献。
 
 \textbf{评价指标。}
-学习性能使用云端准确率和边缘平均准确率衡量。系统效率使用总通信量、累计通信量、形式化轮时延、累计估计时延和 time-to-target accuracy 衡量。为解释系统行为，本文还记录选中客户端数、活跃客户端数、客户端掉线率、伪标签比例、伪标签权重和图注意力统计量。
+学习性能使用云端准确率和边缘平均准确率衡量。对于 NSL-KDD，本文额外记录 macro-F1，以避免总体准确率掩盖少数类性能。系统效率使用总通信量、累计通信量、形式化轮时延、累计估计时延和 time-to-target accuracy 衡量。为解释系统行为，本文还记录选中客户端数、活跃客户端数、客户端掉线率、伪标签比例、伪标签权重和图注意力统计量。
 
-\subsection{总体性能}
+\subsection{跨模态总体性能}
 \label{subsec:overall_performance}
 
-首先在默认网络设置下比较 EdgeQGFed 与各类基线方法。该实验用于回答 EdgeQGFed 是否能够在保持通信效率的同时提升模型性能。表~\ref{tab:overall_performance} 报告云端准确率、边缘平均准确率、损失、time-to-target 和总通信量。图~\ref{fig:overall} 展示随通信轮数和累计通信量变化的收敛曲线。
+首先在四个数据集上比较 EdgeQGFed 与现有代表性联邦学习方法。该实验用于回答框架是否能适配不同数据形态，而不是只在单一图像任务上有效。表~\ref{tab:overall_performance} 采用横向大表形式报告不同数据集和划分设置下的云端准确率；对于 NSL-KDD，同时记录五分类准确率和 macro-F1。图~\ref{fig:overall} 展示不同数据集上的准确率收敛曲线。
 
 \begin{table*}[t]
 \centering
-\caption{默认边缘网络条件下的总体性能}
+\caption{跨模态边缘任务下与现有方法的总体性能对比}
 \label{tab:overall_performance}
-\begin{tabular}{llcccccc}
+\resizebox{\textwidth}{!}{
+\begin{tabular}{lccccccc}
 \toprule
-数据集 & 方法 & 云端准确率 & 边缘准确率 & 云端损失 & 边缘损失 & Time-to-Target & 通信量 \\
+方法 & CIFAR-10 & CIFAR-10 & CIFAR-100 & CIFAR-100 & HARBox & NSL-KDD & NSL-KDD \\
+& Dir(0.3) & Dir(0.1) & Dir(0.3) & Dir(0.1) & Real-world & Acc. & Macro-F1 \\
 \midrule
-HARBox & H-FedAvg & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
-HARBox & H-FedAvg+PL & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
-HARBox & EdgeQGFed & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
-SVHN & H-FedAvg & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
-SVHN & H-FedAvg+PL & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
-SVHN & EdgeQGFed & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
-CIFAR-10 & H-FedAvg & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
-CIFAR-10 & H-FedAvg+PL & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
-CIFAR-10 & EdgeQGFed & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
-CIFAR-100 & H-FedAvg & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
-CIFAR-100 & H-FedAvg+PL & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
-CIFAR-100 & EdgeQGFed & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+FedAvg & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} \\
+FedProx & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} \\
+FedAsync & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} \\
+FedBuff & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} \\
+FedAC & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} \\
+ASAFL & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} \\
+FedAMP & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} \\
+pFedGraph & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} \\
+FedSaC & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} \\
+FedAMP-Async & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} \\
+pFedGraph-Async & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} \\
+EdgeQGFed & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} \\
 \bottomrule
 \end{tabular}
+}
 \end{table*}
 
 \textbf{绘图方式。}
-图~\ref{fig:overall}(a) 为折线图，横轴为通信轮数，纵轴为云端准确率；图~\ref{fig:overall}(b) 为折线图，横轴为累计通信量，纵轴为云端准确率；图~\ref{fig:overall}(c) 为分组柱状图，横轴为数据集，纵轴为 time-to-target，不同柱表示不同方法。
+图~\ref{fig:overall}(a) 为折线图，横轴为训练步数，纵轴为云端准确率，不同曲线表示四个数据集；图~\ref{fig:overall}(b) 为折线图，横轴为累计通信量，纵轴为云端准确率，不同曲线表示主要方法；图~\ref{fig:overall}(c) 为分组柱状图，横轴为数据集，纵轴为 time-to-target。
 
-\subsection{通信效率}
+\subsection{通信效率与时延}
 \label{subsec:comm_efficiency}
 
-随后评估不同通信预算下的训练效率。该实验更贴近 INFOCOM 关注的网络系统问题，即在有限通信资源下，方法是否能够更快达到目标精度。本文改变每轮通信预算，并比较 EdgeQGFed、H-FedAvg、H-FedAvg+PL 和 EdgeQGFed w/o RS。
+随后评估通信预算、三层时延和系统能耗对训练效率的影响。该实验更贴近 INFOCOM 关注的网络系统问题，即在有限通信资源下，方法是否能够以更低通信量、更短系统时延和更少能耗达到目标精度。为减少重复，本文选择 HARBox 和 CIFAR-10 作为代表性任务，分别覆盖传感序列与图像数据。通信预算分别设置为 HARBox 的 $\{50,100,200,300\}$ MB 和 CIFAR-10 的 $\{50,100,300,600\}$ MB。表~\ref{tab:budget_energy} 给出假设结果，用于说明后续实验记录格式。
 
-\begin{table}[t]
+\begin{table*}[t]
 \centering
-\caption{通信预算敏感性}
-\label{tab:budget}
-\begin{tabular}{llcccc}
+\caption{通信预算、时延与能耗敏感性（假设结果）}
+\label{tab:budget_energy}
+\resizebox{\textwidth}{!}{
+\begin{tabular}{llcccccc}
 \toprule
-数据集 & 预算等级 & 方法 & 云端准确率 & Time-to-Target & 预算使用率 \\
+数据集 & 方法 & Round Budget & 云端准确率 & 边缘准确率 & Time-to-Target & 每轮通信量 & Energy-to-Target \\
+& & (MB) & (\%) & (\%) & (s) & (MB) & (J) \\
 \midrule
-HARBox & Low & H-FedAvg & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
-HARBox & Low & EdgeQGFed & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
-CIFAR-10 & Medium & H-FedAvg & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
-CIFAR-10 & Medium & EdgeQGFed & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
-CIFAR-100 & High & H-FedAvg & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
-CIFAR-100 & High & EdgeQGFed & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+HARBox & H-FedAvg & 100 & 75.42 & 73.86 & 31.45 & 16.82 & 14.27 \\
+HARBox & H-FedAvg+PL & 100 & 78.36 & 76.91 & 24.06 & 16.95 & 12.08 \\
+HARBox & EdgeQGFed & 100 & 83.29 & 81.74 & 18.50 & 15.14 & 9.63 \\
+CIFAR-10 & H-FedAvg & 100 & 84.38 & 82.47 & 39.80 & 30.00 & 26.72 \\
+CIFAR-10 & H-FedAvg+PL & 100 & 87.64 & 85.91 & 30.64 & 30.00 & 22.18 \\
+CIFAR-10 & EdgeQGFed & 100 & 90.12 & 88.96 & 23.12 & 30.00 & 17.36 \\
 \bottomrule
 \end{tabular}
-\end{table}
+}
+\end{table*}
 
 \textbf{绘图方式。}
-主要图为折线图，横轴为累计通信量，纵轴为云端准确率。另一张折线图以每轮通信预算为横轴，以 time-to-target 为纵轴，用于展示 EdgeQGFed 是否能够更有效地利用通信资源。
-
-\subsection{时延与 Time-to-Accuracy}
-\label{subsec:latency}
-
-边缘智能系统不能只比较精度，还需要比较达到目标精度所需的系统时延。本文基于式~\eqref{eq:latency} 评估三层时延模型，分别报告端到边上传、边缘计算、边到云上传、云端聚合和云到边下发五个部分。进一步地，本文记录 time-to-target accuracy，用于衡量在相同网络条件下模型达到可用精度的速度。
-
-\begin{table}[t]
-\centering
-\caption{默认网络条件下的时延分解}
-\label{tab:latency}
-\begin{tabular}{lccccc}
-\toprule
-方法 & 端到边 & 边缘计算 & 边到云 & 云端聚合 & 云到边 \\
-\midrule
-H-FedAvg & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
-EdgeQGFed w/o RS & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
-EdgeQGFed & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\textbf{绘图方式。}
-时延分解采用堆叠柱状图，横轴为方法或数据集，纵轴为时延。收敛效率采用折线图，横轴为累计估计时延，纵轴为云端准确率。
+图~\ref{fig:comm_latency_energy}(a) 为折线图，横轴为累计通信量，纵轴为云端准确率，不同曲线表示 H-FedAvg、H-FedAvg+PL 和 EdgeQGFed。图~\ref{fig:comm_latency_energy}(b) 为堆叠柱状图，横轴为方法，纵轴为摊销每轮时延，分解为端到边上传、边缘计算、边到云上传、云端聚合和云到边下发五个部分。图~\ref{fig:comm_latency_energy}(c) 为堆叠柱状图，横轴为方法，纵轴为每轮能耗，分解为通信能耗和计算能耗。能耗由日志中的时延分量离线计算，例如端到边上传能耗为 $E^{\mathrm{c2e}}=P_{\mathrm{client}}T^{\mathrm{c2e}}$，边缘计算能耗为 $E^{\mathrm{edge}}=P_{\mathrm{edge}}T^{\mathrm{edge}}$。
 
 \subsection{链路异构与客户端移动性}
 \label{subsec:heterogeneity}
 
-本文进一步评估带宽异构和客户端不稳定参与下的鲁棒性。对于带宽异构，本文设置不同强度的 edge profile，并测试随机带宽分布；对于客户端移动性，本文改变客户端掉线概率，并可引入切换导致的额外掉线风险。该实验用于验证资源感知采样能否避开低质量链路客户端，以及图注意力聚合能否在边缘更新不完整时保持稳定。
+本文进一步评估带宽异构和客户端不稳定参与下的鲁棒性。该实验主要在 HARBox 上进行，因为其用户级划分更接近移动边缘设备持续参与的场景。本文改变客户端掉线率、带宽分布和移动性模式，以验证资源感知采样能否避开低质量链路客户端，以及图注意力聚合能否在边缘更新不完整时保持稳定。
 
 \begin{table}[t]
 \centering
-\caption{客户端掉线和移动性下的鲁棒性}
-\label{tab:dropout}
+\caption{链路异构与客户端移动性下的鲁棒性（假设结果）}
+\label{tab:mobility}
 \begin{tabular}{lcccc}
 \toprule
-掉线率 & 方法 & 云端准确率 & 活跃客户端数 & Time-to-Target \\
+场景 & 方法 & 云端准确率 & 活跃客户端数 & Time-to-Target \\
 \midrule
-0.0 & H-FedAvg & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
-0.0 & EdgeQGFed & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
-0.1 & H-FedAvg & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
-0.1 & EdgeQGFed & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
-0.3 & H-FedAvg & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
-0.3 & EdgeQGFed & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} & \rule{0.7cm}{0.4pt} \\
+Static & H-FedAvg & 75.42 & 40.0 & 31.45 \\
+Static & EdgeQGFed w/o RS & 80.37 & 40.0 & 23.86 \\
+Static & EdgeQGFed & 83.29 & 40.0 & 18.50 \\
+Mobility & H-FedAvg & 68.74 & 28.6 & 47.32 \\
+Mobility & EdgeQGFed w/o RS & 74.18 & 29.1 & 35.74 \\
+Mobility & EdgeQGFed & 80.46 & 33.8 & 24.92 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \textbf{绘图方式。}
-带宽异构实验采用折线图，横轴为异构程度，纵轴为 time-to-target 或最终云端准确率。客户端移动性实验采用折线图，横轴为掉线率，纵轴为云端准确率。
+图~\ref{fig:mobility}(a) 为折线图，横轴为客户端掉线率，纵轴为云端准确率，不同曲线表示 H-FedAvg、EdgeQGFed w/o RS 和 EdgeQGFed。图~\ref{fig:mobility}(b) 为点线图，横轴为带宽异构模式，纵轴为 Time-to-Target。图~\ref{fig:mobility}(c) 为双轴柱线图，横轴为掉线率，左轴为活跃客户端数，右轴为预算使用率，用于解释资源感知采样在移动性条件下的作用。
 
 \subsection{消融实验}
 \label{subsec:ablation}
 
-为了分析各组件的作用，本文分别去除图注意力聚合、资源感知采样、伪标签学习和云边一致性训练。默认在 HARBox 和 CIFAR-10 上进行消融，必要时在 CIFAR-100 上补充难分类场景结果。预期结果是，图注意力聚合能够缓解 non-IID 下的跨边缘负迁移，资源感知采样能够降低 time-to-target，伪标签学习能够在少标签条件下提升模型性能。
+为了分析各组件的作用，本文分别去除图注意力聚合、资源感知采样、伪标签学习和云边一致性训练。消融实验默认在 HARBox 和 CIFAR-10 上进行，分别代表传感序列任务和图像任务。该实验同时报告准确率、Time-to-Target、通信量和能耗，从性能与效率两个角度解释 EdgeQGFed 的收益来源。
+
+\begin{table*}[t]
+\centering
+\caption{组件消融结果（假设结果）}
+\label{tab:ablation}
+\resizebox{\textwidth}{!}{
+\begin{tabular}{llccccc}
+\toprule
+数据集 & 变体 & 云端准确率 & 边缘准确率 & Time-to-Target & 每轮通信量 & Energy-to-Target \\
+& & (\%) & (\%) & (s) & (MB) & (J) \\
+\midrule
+HARBox & Full EdgeQGFed & 81.58 & 80.12 & 18.50 & 15.14 & 9.63 \\
+HARBox & w/o Graph & 79.42 & 77.96 & 20.84 & 15.10 & 10.38 \\
+HARBox & w/o Resource Sampling & 80.06 & 78.73 & 23.76 & 17.82 & 12.61 \\
+HARBox & w/o Pseudo Label & 77.85 & 76.44 & 27.13 & 14.96 & 13.40 \\
+HARBox & w/o Consistency & 78.62 & 77.18 & 25.48 & 15.02 & 12.92 \\
+CIFAR-10 & Full EdgeQGFed & 90.60 & 89.47 & 23.12 & 30.00 & 17.36 \\
+CIFAR-10 & w/o Graph & 89.12 & 87.76 & 26.44 & 29.96 & 18.84 \\
+CIFAR-10 & w/o Resource Sampling & 89.74 & 88.21 & 29.06 & 32.54 & 21.37 \\
+CIFAR-10 & w/o Pseudo Label & 87.46 & 86.03 & 34.85 & 29.88 & 24.92 \\
+CIFAR-10 & w/o Consistency & 88.25 & 86.91 & 31.72 & 29.92 & 23.40 \\
+\bottomrule
+\end{tabular}
+}
+\end{table*}
+
+\textbf{绘图方式。}
+图~\ref{fig:ablation}(a) 为分组柱状图，横轴为消融变体，纵轴为云端准确率，分组为 HARBox 和 CIFAR-10。图~\ref{fig:ablation}(b) 为雷达图，维度包括 Accuracy、Time-to-Target、Communication、Energy 和 Robustness，其中越小越好的指标先归一化并反向处理。
+
+\subsection{统计异质性与少标签敏感性}
+\label{subsec:sensitivity}
+
+本文进一步分析 EdgeQGFed 在不同 non-IID 强度和标签稀缺程度下的稳定性。对于 CIFAR-10 和 CIFAR-100，本文改变 Dirichlet 参数 $\alpha\in\{0.1,0.3,0.5,1.0\}$，其中较小的 $\alpha$ 表示更强的数据异构性。对于 HARBox，本文改变标签比例 $\{0.05,0.1,0.2,1.0\}$，考察少标签传感序列任务中的半监督收益。
 
 \begin{table}[t]
 \centering
-\caption{消融实验}
-\label{tab:ablation}
-\begin{tabular}{lcccc}
+\caption{异质性与标签比例敏感性（假设结果）}
+\label{tab:sensitivity}
+\begin{tabular}{llccc}
 \toprule
-变体 & 图聚合 & 资源采样 & 伪标签 & 云端准确率 \\
+数据集 & 变量 & 取值 & 云端准确率 & 边缘准确率 \\
 \midrule
-完整 EdgeQGFed & 是 & 是 & 是 & \rule{0.8cm}{0.4pt} \\
-w/o Graph & 否 & 是 & 是 & \rule{0.8cm}{0.4pt} \\
-w/o RS & 是 & 否 & 是 & \rule{0.8cm}{0.4pt} \\
-w/o PL & 是 & 是 & 否 & \rule{0.8cm}{0.4pt} \\
+CIFAR-10 & $\alpha$ & 0.1 & 90.60 & 89.47 \\
+CIFAR-10 & $\alpha$ & 0.3 & 91.34 & 90.08 \\
+CIFAR-10 & $\alpha$ & 0.5 & 91.82 & 90.51 \\
+CIFAR-10 & $\alpha$ & 1.0 & 92.15 & 90.84 \\
+CIFAR-100 & $\alpha$ & 0.1 & 59.42 & 58.37 \\
+CIFAR-100 & $\alpha$ & 0.3 & 61.08 & 60.11 \\
+HARBox & 标签比例 & 0.05 & 77.36 & 75.82 \\
+HARBox & 标签比例 & 0.1 & 81.58 & 80.12 \\
+HARBox & 标签比例 & 0.2 & 84.06 & 82.47 \\
+HARBox & 标签比例 & 1.0 & 89.14 & 87.62 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \textbf{绘图方式。}
-消融实验采用分组柱状图，横轴为不同变体，纵轴分别为云端准确率、time-to-target 和通信开销。该图应放在总体性能和通信效率结果之后，用于解释 EdgeQGFed 的性能来源。
+图~\ref{fig:sensitivity}(a) 为折线图，横轴为 Dirichlet 参数，纵轴为云端准确率，曲线为 CIFAR-10 和 CIFAR-100。图~\ref{fig:sensitivity}(b) 为折线图，横轴为有标签比例，纵轴为云端准确率，展示 HARBox 在少标签条件下的性能变化。
 
-\subsection{敏感性分析}
-\label{subsec:sensitivity}
+\subsection{质量感知图注意力机制分析}
+\label{subsec:graph_analysis}
 
-最后，本文分析 EdgeQGFed 对数据异构程度和标签比例的敏感性。对于 SVHN、CIFAR-10 和 CIFAR-100，本文改变 Dirichlet 参数 $\alpha\in\{0.1,0.3,0.5,1.0\}$。对于弱标签监督，本文改变有标签比例 $\{0.05,0.1,0.2,1.0\}$。该实验用于说明 EdgeQGFed 在更强 non-IID 和更少标签条件下是否仍然有效。
+为解释云端图注意力是否真正依据边缘节点质量进行选择性聚合，本文记录图注意力对角权重、伪标签可靠性和预测置信度等统计量。表~\ref{tab:graph_signal} 给出假设结果。需要注意的是，CIFAR-100 类别数更多，原始置信度不宜与 CIFAR-10 直接比较，因此本文额外给出归一化置信度。
+
+\begin{table}[t]
+\centering
+\caption{质量感知图信号统计（假设结果）}
+\label{tab:graph_signal}
+\begin{tabular}{lcccc}
+\toprule
+数据集 & 注意力对角 & 可靠性 & 置信度 & 归一化置信度 \\
+\midrule
+CIFAR-10 & 0.44 & 0.80 & 0.96 & 0.956 \\
+CIFAR-100 & 0.53 & 0.55 & 0.75 & 0.747 \\
+HARBox & 0.46 & 0.63 & 0.98 & 0.975 \\
+NSL-KDD & 0.44 & 0.80 & 0.94 & 0.925 \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \textbf{绘图方式。}
-non-IID 敏感性实验采用折线图，横轴为 Dirichlet 参数，纵轴为云端准确率。标签比例敏感性实验采用折线图，横轴为有标签比例，纵轴为云端准确率或边缘平均准确率。曲线包含 H-FedAvg、H-FedAvg+PL 和 EdgeQGFed。
+图~\ref{fig:graph_analysis}(a) 为热力图，横轴为源边缘节点，纵轴为目标边缘节点，颜色表示注意力权重。图~\ref{fig:graph_analysis}(b) 为散点图，横轴为边缘可靠性，纵轴为被分配的注意力权重，用于观察高质量边缘节点是否获得更多知识共享权重。
+
+\subsection{NSL-KDD 少数类识别分析}
+\label{subsec:nslkdd_detail}
+
+网络流量五分类任务存在明显类别不均衡，仅报告整体准确率可能掩盖 R2L 和 U2R 等少数类识别不足。为此，本文进一步报告每类 recall 和 macro-F1。该实验用于证明类别均衡监督与分层标注采样能够提升少数类识别能力。
+
+\begin{table}[t]
+\centering
+\caption{NSL-KDD 五分类详细结果（假设结果）}
+\label{tab:nslkdd_detail}
+\resizebox{\columnwidth}{!}{
+\begin{tabular}{lccccccc}
+\toprule
+方法 & Acc & Macro-F1 & Normal & DoS & Probe & R2L & U2R \\
+\midrule
+H-FedAvg & 78.64 & 0.512 & 0.93 & 0.88 & 0.61 & 0.24 & 0.18 \\
+H-FedAvg+PL & 81.37 & 0.574 & 0.94 & 0.90 & 0.66 & 0.31 & 0.25 \\
+EdgeQGFed & 85.92 & 0.681 & 0.96 & 0.92 & 0.73 & 0.46 & 0.38 \\
+\bottomrule
+\end{tabular}
+}
+\end{table}
+
+\textbf{绘图方式。}
+图~\ref{fig:nslkdd_recall} 为分组柱状图，横轴为五个类别，纵轴为 recall，不同柱表示 H-FedAvg、H-FedAvg+PL 和 EdgeQGFed。
+
+\subsection{可扩展性分析}
+\label{subsec:scalability}
+
+最后，本文分析客户端规模扩大时 EdgeQGFed 的通信和时延开销是否可控。该实验主要在 CIFAR-10 上进行，将客户端数从 128 扩展到 1000。对于更大规模的 10000 客户端，本文仅作为系统模拟设定讨论，因为此时每个 logical client 更接近数据分片而非真实用户。
+
+\begin{table}[t]
+\centering
+\caption{客户端规模扩展性（假设结果）}
+\label{tab:scalability}
+\begin{tabular}{lccccc}
+\toprule
+数据集 & 客户端数 & 每轮客户端 & 云端准确率 & Time-to-Target & 每轮通信量 \\
+\midrule
+CIFAR-10 & 128 & 32 & 90.60 & 23.12 & 30.00 \\
+CIFAR-10 & 256 & 32 & 90.18 & 24.06 & 30.00 \\
+CIFAR-10 & 500 & 64 & 89.74 & 26.88 & 60.00 \\
+CIFAR-10 & 1000 & 64 & 89.21 & 28.34 & 60.00 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{绘图方式。}
+图~\ref{fig:scalability} 为双轴折线图，横轴为客户端规模，左轴为 Time-to-Target，右轴为云端准确率，用于展示大规模逻辑客户端下的效率与性能变化。
+
+\section{Conclusion}
+本文提出 EdgeQGFed，一种面向跨模态边缘智能任务的通信高效云-边-端协同学习框架。该框架将主要训练负载上移至边缘服务器，使弱客户端以轻量方式参与数据贡献；云端进一步利用质量感知图注意力机制建模边缘节点之间的语义相关性和更新可靠性，从而实现选择性知识共享。为适应真实边缘网络，EdgeQGFed 结合资源感知客户端采样、边缘侧半监督学习和三层通信时延建模，在通信预算、链路异构和客户端不稳定参与条件下同时优化模型性能和训练效率。实验设计覆盖图像、传感序列和网络流量任务，并从总体性能、time-to-accuracy、通信时延、系统能耗、鲁棒性、组件消融、少数类识别和可扩展性等方面验证方法有效性。未来工作将进一步研究更大规模边缘拓扑下的异步协同训练，以及面向更复杂任务类型的自适应模型部署策略。
+
+% \bibliographystyle{IEEEtran}
+% % argument is your BibTeX string definitions and bibliography database(s)
+% \bibliography{IEEEabrv, EdgeQGFed.bib}
+
+\end{document}
