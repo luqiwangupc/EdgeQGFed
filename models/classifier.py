@@ -31,8 +31,14 @@ def get_classifier(name: str, encoder_name: str, dataset_name: str, dropout_rate
         return SmallCNNClassifier(num_classes=num_classes)
     if name in {'har-cnn', 'sensor-cnn'}:
         return SensorCNNClassifier(input_dim=900, num_classes=num_classes)
+    if name in {'har-mlp-2layer', 'sensor-mlp-2layer', 'two-layer-mlp'}:
+        return TwoLayerSensorMLPClassifier(
+            input_dim=900,
+            num_classes=num_classes,
+            dropout_rate=dropout_rate,
+        )
     if name in {'har-mlp', 'sensor-mlp'}:
-        return SensorMLPClassifier(input_dim=900, num_classes=num_classes)
+        return SensorMLPClassifier(input_dim=900, num_classes=num_classes, dropout_rate=dropout_rate)
     if name in {'network-mlp', 'tabular-mlp', 'flow-mlp'}:
         return SensorMLPClassifier(
             input_dim=input_dim or 122,
@@ -116,6 +122,22 @@ class SensorMLPClassifier(nn.Module):
             nn.ReLU(inplace=True),
             nn.Dropout(dropout_rate),
             nn.Linear(hidden_dim // 2, num_classes),
+        )
+
+    def forward(self, x):
+        return self.classifier(x)
+
+
+class TwoLayerSensorMLPClassifier(nn.Module):
+    def __init__(self, input_dim=900, num_classes=5, hidden_dim=512, dropout_rate=0.1):
+        super().__init__()
+        self.classifier = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(input_dim, hidden_dim),
+            nn.BatchNorm1d(hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout_rate),
+            nn.Linear(hidden_dim, num_classes),
         )
 
     def forward(self, x):
