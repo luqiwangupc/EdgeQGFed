@@ -5,7 +5,7 @@
   evaluate_step: 100
   ema_update_step: 50
   ckpt_save_path: "checkpoints"
-  ckpt_save_name: "best_edgeqgfed_cifar10_c256.pth"
+  ckpt_save_name: "best_edgeqgfed_cifar10_d0.5.pth"
   class_fn: "CE"
   consis_fn: "MSE"
   optimizer: "AdamW"
@@ -17,7 +17,7 @@
   final_weight: 0.4
   warm_mode: "gaussian"
   consistency_confidence_gate: True
-  device: 5
+  device: 0
   pseudo:
     use: True
     weight: 0.25
@@ -30,7 +30,7 @@
 
 topology:
   num_edges: 4
-  num_clients: 256
+  num_clients: 128
   clients_per_round: 32
   edges_per_round: 4
   client_sample_mode: "resource_aware"
@@ -50,7 +50,7 @@ datasets:
   pin_memory: True
   distributed: "nonIID"
   partition_mode: "client_dirichlet"
-  partition_alpha: 0.3
+  partition_alpha: 0.5
   min_client_size: 16
   edge_dirichlet_alpha: 0.3
   client_dirichlet_alpha: 1.0

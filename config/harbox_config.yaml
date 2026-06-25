@@ -5,7 +5,7 @@ train:
   evaluate_step: 50
   ema_update_step: 1
   ckpt_save_path: "checkpoints"
-  ckpt_save_name: "harbox_edgeqgfed_e1.pth"
+  ckpt_save_name: "harbox_edgeqgfed_d0.3.pth"
   class_fn: "CE"
   consis_fn: "MSE"
   optimizer: "AdamW"
@@ -17,7 +17,7 @@ train:
   final_weight: 0.2
   warm_mode: "gaussian"
   consistency_confidence_gate: True
-  device: 5
+  device: 0
   pseudo:
     use: True
     weight: 0.1
@@ -57,6 +57,7 @@ datasets:
 
 models:
   encoder_name: "identity"
+  # Options for HARBox: "har-cnn", "har-mlp-2layer", "har-mlp".
   classifier_name: "har-cnn"
   ema_decay: 0.0
   ema_dynamic_decay: False
