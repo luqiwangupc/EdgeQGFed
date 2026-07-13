@@ -78,7 +78,7 @@ models:
     min_attention: 1.0e-4
 
 network:
-  round_comm_budget_mb: 1200 #默认是1200,600,900,300,,实际只用了22.5，所以改为20， 50，120
+  round_comm_budget_mb: 1200 #defualt1200,600,900,300
   client_uplink_bandwidth_mbps: 80
   edge_uplink_bandwidth_mbps: 400
   cloud_downlink_bandwidth_mbps: 800

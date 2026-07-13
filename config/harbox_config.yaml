@@ -35,7 +35,7 @@ topology:
   edges_per_round: 5
   client_sample_mode: "resource_aware" #balanced resource_aware
   assignment: "round_robin"
-  client_drop_rate: 0 #默认0 0.1 0.2 0.3
+  client_drop_rate: 0 #defualt0 0.1 0.2 0.3
 
 datasets:
   name: "harbox"
@@ -48,7 +48,7 @@ datasets:
   pin_memory: False
   distributed: "nonIID"
   partition_mode: "user"
-  partition_alpha: 0.3 #默认0.3 0.1 0.5 1
+  partition_alpha: 0.3 #defualt0.3 0.1 0.5 1
   min_client_size: 1
   edge_dirichlet_alpha: 0.3
   client_dirichlet_alpha: 1.0
@@ -76,7 +76,7 @@ models:
     min_attention: 1.0e-4
 
 network:
-  round_comm_budget_mb: 300 #默认是300,100,200,500
+  round_comm_budget_mb: 300 #defualt300,100,200,500
   client_uplink_bandwidth_mbps: 20
   edge_uplink_bandwidth_mbps: 200
   cloud_downlink_bandwidth_mbps: 400
@@ -84,9 +84,9 @@ network:
     include_model_sync: True
   bandwidth:
     mode: "edge_profile"
-    client_uplink_by_edge_mbps: [5, 10, 20, 30, 50] #默认[5, 10, 20, 30, 50]
-    edge_uplink_by_edge_mbps: [80, 120, 200, 300, 400] #默认[80, 120, 200, 300, 400]
-    cloud_downlink_by_edge_mbps: [150, 250, 400, 500, 600] #默认[150, 250, 400, 500, 600]
+    client_uplink_by_edge_mbps: [5, 10, 20, 30, 50] #defualt[5, 10, 20, 30, 50]
+    edge_uplink_by_edge_mbps: [80, 120, 200, 300, 400] #defualt[80, 120, 200, 300, 400]
+    cloud_downlink_by_edge_mbps: [150, 250, 400, 500, 600] #defualt[150, 250, 400, 500, 600]
     client_distribution:
       type: "uniform"
       min_mbps: 2
