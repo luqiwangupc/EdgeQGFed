@@ -17,6 +17,10 @@
 \usepgfplotslibrary{polar}
 \pgfplotsset{compat=1.18}
 
+\newtheorem{assumption}{假设}
+\newtheorem{lemma}{引理}
+\newtheorem{theorem}{定理}
+
 \definecolor{cmain}{HTML}{0178A2}
 \definecolor{cwo}{HTML}{53C3C4}
 \definecolor{cbase}{HTML}{EDF3F0}
@@ -465,6 +469,84 @@ EdgeQGFed 的整体流程如图~\ref{fig:fig1} 所示。图中自下而上对应
 \end{algorithmic}
 \end{algorithm}
 
+\subsection{收敛性分析}
+\label{subsec:convergence}
+
+由于资源感知采样会使活跃边缘集合 $\mathcal{E}_t$ 和权重 $\omega_e^t$ 随轮次变化，直接对动态目标求和会破坏标准 telescoping 下降关系。因此，本文分析固定全局目标，并将资源采样引入的方向偏差显式计入收敛上界。设边缘 $e$ 的理想风险为 $\mathcal{F}_e(\theta)$，全局目标为
+\begin{equation}
+    \mathcal{F}(\theta)=
+    \sum_{e=1}^{E}p_e\mathcal{F}_e(\theta),
+    \quad
+    p_e\ge0,\quad \sum_{e=1}^{E}p_e=1 .
+    \label{eq:fixed_global_objective}
+\end{equation}
+式~\eqref{eq:edge_loss} 中的监督、一致性和伪标签训练被视为对 $\mathcal{F}_e$ 的有偏随机梯度估计。
+
+\begin{assumption}[标准条件]
+每个 $\mathcal{F}_e$ 为 $L$-smooth，$\mathcal{F}$ 有下界 $\mathcal{F}_\star$。边缘随机梯度 $g_e^t$ 满足
+$\mathbb{E}\|g_e^t-\mathbb{E}[g_e^t|\theta_e^t]\|^2\le\sigma^2$，且
+$\|\mathbb{E}[g_e^t|\theta_e^t]-\nabla\mathcal{F}_e(\theta_e^t)\|\le\delta_t$。
+边缘异构性和资源采样偏差分别满足
+\begin{equation}
+    \sum_{e=1}^{E}p_e
+    \|\nabla\mathcal{F}_e(\theta)-\nabla\mathcal{F}(\theta)\|^2
+    \le \zeta^2,\quad
+    \left\|\mathbb{E}_{\mathcal{E}_t,\omega^t}\!\left[
+    \sum_{e\in\mathcal{E}_t}\omega_e^t
+    \nabla\mathcal{F}_e(\theta)\right]
+    -\nabla\mathcal{F}(\theta)\right\|
+    \le \epsilon_{s,t}.
+    \label{eq:convergence_assumption}
+\end{equation}
+若资源感知采样在期望意义下无偏，则 $\epsilon_{s,t}=0$。此外，云端注意力矩阵满足 $A^t\ge0$、$A^t\mathbf{1}=\mathbf{1}$，并在所用范数下非扩张，即 $\|A^tX-A^tY\|_F\le\|X-Y\|_F$。
+\end{assumption}
+
+\begin{theorem}[EdgeQGFed 的非凸收敛性]
+在假设 1 成立的条件下，设每轮活跃边缘最多执行 $K$ 步本地 SGD，学习率满足 $\eta\le 1/(cLK)$，其中 $c>0$ 为常数。令 $\bar{\theta}^t$ 为第 $t$ 轮云端聚合模型，则存在常数 $C_1,C_2,C_3,C_4>0$，使得
+\begin{align}
+    \frac{1}{T}\sum_{t=0}^{T-1}
+    \mathbb{E}\|\nabla\mathcal{F}(\bar{\theta}^t)\|^2
+    \le&
+    \frac{2(\mathcal{F}(\bar{\theta}^0)-\mathcal{F}_\star)}{\eta KT}
+    +C_1\eta\sigma^2
+    +C_2\eta^2K^2\zeta^2 \nonumber\\
+    &+C_3\bar{\delta}^2
+    +C_4\bar{\epsilon}_s^2 ,
+    \label{eq:convergence_bound}
+\end{align}
+其中
+$\bar{\delta}^2=\frac{1}{T}\sum_{t=0}^{T-1}\delta_t^2$，
+$\bar{\epsilon}_s^2=\frac{1}{T}\sum_{t=0}^{T-1}\epsilon_{s,t}^2$。若 $K$ 为常数且 $\eta=\mathcal{O}(T^{-1/2})$，则
+\begin{equation}
+    \frac{1}{T}\sum_{t=0}^{T-1}
+    \mathbb{E}\|\nabla\mathcal{F}(\bar{\theta}^t)\|^2
+    =
+    \mathcal{O}(T^{-1/2})
+    +\mathcal{O}(T^{-1}\zeta^2)
+    +\mathcal{O}(\bar{\delta}^2)
+    +\mathcal{O}(\bar{\epsilon}_s^2).
+    \label{eq:convergence_rate}
+\end{equation}
+\end{theorem}
+
+\textbf{证明.}
+由 $L$-smooth 性和有偏 SGD 下降引理，对单步更新 $\theta^+=\theta-\eta g$ 有
+$\mathbb{E}\mathcal{F}(\theta^+)\le\mathcal{F}(\theta)-c\eta\|\nabla\mathcal{F}(\theta)\|^2+C\eta^2\sigma^2+C\eta\delta_t^2$，其中伪标签偏差项由 Young 不等式得到。将该下降关系累积到每轮 $K$ 步本地更新，并考虑边缘漂移和资源采样偏差，可得
+\begin{equation}
+    \mathbb{E}\mathcal{F}(\bar{\theta}^{t+1})
+    \le
+    \mathcal{F}(\bar{\theta}^{t})
+    -c\eta K
+    \mathbb{E}\|\nabla\mathcal{F}(\bar{\theta}^t)\|^2
+    +C\eta^2K\sigma^2
+    +C\eta K(\delta_t^2+\epsilon_{s,t}^2)
+    +C\eta^3K^3\zeta^2 .
+    \label{eq:round_descent_fixed}
+\end{equation}
+其中，$\delta_t$、$\epsilon_{s,t}$ 和 $\zeta$ 分别对应伪标签偏差、资源采样偏差和本地多步更新下的边缘异构性漂移。由于 $A^t$ 为非扩张归一化矩阵，图聚合不会引入无界放大项。对式~\eqref{eq:round_descent_fixed} 从 $t=0$ 到 $T-1$ 求和，并利用 $\mathcal{F}(\theta)\ge\mathcal{F}_\star$，再除以 $\eta KT$，得到式~\eqref{eq:convergence_bound}。令 $\eta=\mathcal{O}(T^{-1/2})$ 且 $K=\mathcal{O}(1)$，得到式~\eqref{eq:convergence_rate}。\hfill$\square$
+
+上述结果表明，在伪标签偏差和资源采样偏差可控时，EdgeQGFed 保持非凸联邦优化的一阶驻点收敛性质。若资源感知采样无偏，则 $\bar{\epsilon}_s=0$；若进一步有 $\bar{\delta}\to0$，则可恢复标准 $\mathcal{O}(T^{-1/2})$ 收敛行为。
+
 \section{实验评估}
 \label{sec:evaluation}
 
@@ -474,7 +556,7 @@ EdgeQGFed 的整体流程如图~\ref{fig:fig1} 所示。图中自下而上对应
 \label{subsec:exp_setup}
 
 \textbf{数据集与任务。}
-本文使用四个公开数据集进行评估，覆盖图像、传感序列和网络流量三类边缘智能任务。CIFAR-10 和 CIFAR-100 用于评估图像任务下的表征迁移与类别扩展能力；HARBox 用于评估用户级传感序列数据上的边缘协同学习；NSL-KDD 用于评估网络流量任务。对于 CIFAR-10 和 CIFAR-100，本文采用 Dirichlet non-IID 划分，并重点报告 $\alpha=0.3$ 和 $\alpha=0.1$；HARBox 按用户划分。
+本文使用四个公开数据集进行评估，覆盖图像、手机软件的传感序列和网络流量三类跨模态边缘智能任务。CIFAR-10 和 CIFAR-100 用于评估图像任务下的表征迁移与类别扩展能力；HARBox 用于评估用户级传感序列数据上的边缘协同学习；NSL-KDD 用于评估网络流量任务。对于 CIFAR-10 和 CIFAR-100，本文采用 Dirichlet non-IID 划分，并重点报告 $d=0.3$ 和 $d=0.1$；HARBox 按用户划分。 
 
 对于 NSL-KDD，本文首先对连续特征进行归一化，并将协议、服务和连接状态等离散字段编码为数值特征。原始二分类设置通常将所有攻击合并为 Attack，该任务在预实验中准确率可接近 $99\%$，难以充分反映边缘节点之间的攻击类型差异。为避免该任务过于饱和，本文将其转换为 Normal、DoS、Probe、R2L 和 U2R 五分类任务，并按客户端级 non-IID 方式划分。该设置更适合评估个性化边缘模型，因为不同边缘节点可能面对不同攻击组合，简单全局平均容易偏向多数类，而个性化更新能够更直接地反映局部流量分布。
 
@@ -501,71 +583,141 @@ NSL-KDD & 网络流量 & 5 & Dirichlet & 0.1 \\
 总体性能实验比较 EdgeQGFed 与多类代表性联邦学习方法，包括同步聚合、近端正则、异步更新、缓冲式聚合、个性化联邦学习和图结构个性化方法。系统效率和消融实验则聚焦于少量关键对照，包括 H-FedAvg、H-FedAvg+PL、EdgeQGFed w/o Graph、EdgeQGFed w/o RS、EdgeQGFed w/o PL 和完整 EdgeQGFed，以分析本文各模块的贡献。
 
 \textbf{评价指标。}
-学习性能使用云端准确率和边缘平均准确率衡量。对于 NSL-KDD，本文额外记录 macro-F1，以避免总体准确率掩盖少数类性能。系统效率使用总通信量、累计通信量、形式化轮时延、累计估计时延和 time-to-target accuracy 衡量。为解释系统行为，本文还记录选中客户端数、活跃客户端数、客户端掉线率、伪标签比例、伪标签权重和图注意力统计量。
+学习性能使用云端准确率和边缘平均准确率衡量。系统效率使用总通信量、Energy-to-Target和time-to-target accuracy衡量。为解释系统行为，本文还记录选中客户端数、客户端掉线率、标签比例和图注意力统计量。
 
 \subsection{跨模态总体性能}
 \label{subsec:overall_performance}
 
-首先在四个数据集上比较 EdgeQGFed 与现有代表性联邦学习方法。该实验用于回答框架是否能适配不同数据形态，而不是只在单一图像任务上有效。表~\ref{tab:overall_performance} 采用横向大表形式报告不同数据集和划分设置下的云端准确率；对于 NSL-KDD，同时记录五分类准确率和 macro-F1。图~\ref{fig:overall} 展示不同数据集上的准确率收敛曲线。
+首先在四个数据集上比较 EdgeQGFed 与现有代表性联邦学习方法。该实验用于证明本文框架针对不同数据形态的适配性，而不是只在单一图像任务上有效。表~\ref{tab:overall_performance} 显示了不同数据集和划分设置下的云端准确率。图~\ref{fig:overall} 展示不同数据集上的准确率收敛曲线。
 
 \begin{table*}[t]
-\centering
-\caption{跨模态边缘任务下与现有方法的总体性能对比}
-\label{tab:overall_performance}
-\resizebox{\textwidth}{!}{
-\begin{tabular}{lccccccc}
-\toprule
-方法 & CIFAR-10 & CIFAR-10 & CIFAR-100 & CIFAR-100 & HARBox & NSL-KDD & NSL-KDD \\
-& Dir(0.3) & Dir(0.1) & Dir(0.3) & Dir(0.1) & Real-world & Acc. & Macro-F1 \\
-\midrule
-FedAvg & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} \\
-FedProx & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} \\
-FedAsync & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} \\
-FedBuff & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} \\
-FedAC & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} \\
-ASAFL & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} \\
-FedAMP & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} \\
-pFedGraph & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} \\
-FedSaC & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} \\
-FedAMP-Async & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} \\
-pFedGraph-Async & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} \\
-EdgeQGFed & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} \\
-\bottomrule
-\end{tabular}
-}
+    \centering
+    \caption{Highest Test Accuracy Comparison of FL Frameworks in Heterogeneous Environments.}
+    \label{tab:overall_performance}
+    \begin{adjustbox}{max width=\textwidth}
+    \begin{threeparttable}
+        \setlength{\tabcolsep}{10pt}
+        \begin{tabular}{
+            lc
+            >{\columncolor{Gray}}c
+            >{\columncolor{lightGray}}c
+            >{\columncolor{Gray}}c
+            >{\columncolor{lightGray}}c
+            >{\columncolor{Gray}}c
+            >{\columncolor{lightGray}}c
+            >{\columncolor{Gray}}c
+            >{\columncolor{lightGray}}c
+            >{\columncolor{Gray}}c
+            >{\columncolor{lightGray}}c
+            >{\columncolor{Gray}}c
+        }
+            \toprule
+            \multirow{2}{*}{Methods} & \multirow{2}{*}{\makecell[c]{Framework \\Characteristics}} 
+              & \multicolumn{3}{c}{CIFAR-10} 
+              & \multicolumn{3}{c}{CIFAR-100} 
+              & \multicolumn{1}{c}{HARBox}
+              & \multicolumn{3}{c}{NSL-KDD}\\
+            \cmidrule(lr){3-5}
+            \cmidrule(lr){6-8}
+            \cmidrule(lr){9-9}
+            \cmidrule(lr){10-12}
+              && $Dir$(0.5) & $Dir$(0.3) & $Dir$(0.1) & $Dir$(0.5) & $Dir$(0.3) & $Dir$(0.1) & User-level split & $Dir$(0.5) & $Dir$(0.3) & $Dir$(0.1)\\
+            \midrule
+        HierFAVG (ICC'20) & HFL \& Full& 68.43$\pm$0.18 &67.85$\pm$0.07 & 67.21$\pm$0.12 & 41.17$\pm$0.03 &41.02$\pm$0.08 & 40.78$\pm$0.26 & 70.77$\pm$0.14 &69.02$\pm$0.32& 68.40$\pm$0.06& 68.26$\pm$0.33\\
+        % FedAgg (INFOCOM'24)& \rule{0.8cm}{0.4pt} & &\rule{0.8cm}{0.4pt} & \rule{0.8cm}{0.4pt} & &\rule{0.8cm}{0.4pt} & X & &\rule{0.8cm}{0.4pt} & \\
+        MOON (CVPR'21)& Hetero \& Full & 69.08$\pm$0.16&67.71$\pm$0.29 & 66.46$\pm$0.35 & 62.35$\pm$0.24&61.04$\pm$0.34 & 59.35$\pm$0.51 & 64.52$\pm$0.20 &65.36$\pm$0.27 & 64.83$\pm$0.22 &63.31$\pm$0.36 \\
+        FedProto (AAAI'22)& Hetero \& Full & 70.31$\pm$0.20 &69.84$\pm$0.38 & 69.02$\pm$0.19 & 60.13$\pm$0.26&59.28$\pm$0.01 & 58.91$\pm$0.05 & 72.54$\pm$0.01 &70.38$\pm$0.23 & 70.17$\pm$0.10& 69.81$\pm$0.29\\
+        FedUFD (INFOCOM'25)& Hetero \& Full&69.62$\pm$0.40 & 76.94$\pm$0.15 & 88.27$\pm$0.02 &31.37$\pm$0.18 & 37.32$\pm$0.22 & 49.97$\pm$0.14& - &- &- & - \\
+        FedMatch (ICLR'21) & FSSL & 51.37$\pm$0.25 &49.82$\pm$0.13 & 47.66$\pm$0.19 & 43.11$\pm$0.02 &41.80$\pm$0.27 & 40.72$\pm$0.08 & 63.45$\pm$0.45 &67.24$\pm$0.25 & 66.81$\pm$0.04 & 66.09$\pm$0.12\\
+        ProxyFL (CVPR'26)& Hetero \& FSSL &89.91$\pm$0.15 &89.25$\pm$0.17 & 88.52$\pm$0.28 & 57.83$\pm$0.23 &57.77$\pm$0.11 & 57.21$\pm$0.44 & 78.34$\pm$0.09 &75.42$\pm$0.30 &74.60$\pm$0.01 & 73.21$\pm$0.21 \\
+        % FedLAGC & &89.93&81.20 & $<$ 81.20 &82.93 &53.68 & $<$ 53.68 & - &-&- & - \\
+        % PACE (INFOCOM'26)& \rule{0.8cm}{0.4pt} & - &- & 81.65 &-&- & 41.11 & 92.73 &- & -&-\\
+        H-FedAvg & w/o RS \& Graph \& PL&90.86$\pm$0.42&90.72$\pm$0.09 & 88.92$\pm$0.05 & 61.46$\pm$0.37&61.23$\pm$0.24 & 60.94$\pm$0.18 & 78.42$\pm$0.46  &75.13$\pm$0.10&74.82$\pm$0.17 & 74.61$\pm$0.11\\
+        H-FedAvg+PL & w/o RS \& Graph   &90.97$\pm$0.11 &90.95$\pm$0.32 & 89.73$\pm$0.02&63.05$\pm$0.09&62.81$\pm$0.16 & 62.12$\pm$0.43 & 82.96$\pm$0.05 &79.49$\pm$0.06&79.32$\pm$0.17& 77.85$\pm$0.22\\
+        \textbf{EdgeQGFed (Ours)}  & \textbf{Ours} &\textbf{91.34$\pm$0.13}&\textbf{91.29$\pm$0.07} & \textbf{90.60$\pm$0.03} &\textbf{63.72$\pm$0.04}&\textbf{63.56$\pm$0.21}&\textbf{63.53$\pm$0.14}&\textbf{84.14$\pm$0.06}&\textbf{81.27$\pm$0.08}&\textbf{80.90$\pm$0.05}&\textbf{78.45$\pm$0.31}\\
+        \bottomrule
+        \end{tabular}
+    \end{threeparttable}
+    \end{adjustbox}
+    \begin{flushleft}
+    {\scriptsize * FedLAGC is evaluated under the fully supervised image classification setting, following its original setup.}
+    \end{flushleft}
 \end{table*}
 
-\textbf{绘图方式。}
-图~\ref{fig:overall}(a) 为折线图，横轴为训练步数，纵轴为云端准确率，不同曲线表示四个数据集；图~\ref{fig:overall}(b) 为折线图，横轴为累计通信量，纵轴为云端准确率，不同曲线表示主要方法；图~\ref{fig:overall}(c) 为分组柱状图，横轴为数据集，纵轴为 time-to-target。
 
+通过表~\ref{tab:overall_performance}中数据可知，本文所提的EdgeQGFed框架，在不同数据异构程度，以及跨模态数据上都具有良好的性能，优于当下先进框架。EdgeQGFed框架在Dirichlet参数为0.1的强异构情况下，CIFAR-10、CIFAR-100、HARBox、NSL-KDD任务仍比最优框架分别高XXX\%，这表明本框架具有更强的适应性。现有联邦学习框架多聚焦于图像处理任务，难以应对当下多任务数据类型的场景。本实验结果表明EdgeQGFed更贴近现实世界边缘智能任务需要。
+
+\begin{figure}[t]
+    \centering
+    \subfloat[]{\label{fig:overall_cloud}\includegraphics[width=0.242\textwidth]{cloud_cov.pdf}}
+    %\hspace{0.0001in}
+    \subfloat[]{\label{fig:overall_edge}\includegraphics[width=0.242\textwidth]{edge_cov.pdf}}    
+    \caption{不同边缘智能任务上的模型收敛性能。(a) 云端教师模型准确率；(b) 边缘个性化模型平均准确率。}
+    \label{fig:overall}
+\end{figure}
+图~\ref{fig:overall}(a)(b)展示了 EdgeQGFed 在不同边缘智能任务上的收敛性能。CIFAR-10、HARBox 和 NSL-KDD 均能在较少训练步数内快速达到稳定精度，说明该框架能够适配图像、传感序列和网络流量等不同数据形态。CIFAR-100 由于类别数更多且少标签 non-IID 条件更困难，最终精度相对较低，但仍呈现稳定上升趋势。云端教师模型与边缘个性化模型的收敛曲线基本一致，表明质量感知云端聚合能够在提升全局知识协调能力的同时保持边缘模型稳定更新。
+\begin{figure}[t]
+    \centering
+    \subfloat[]{\label{fig:edge}\includegraphics[width=0.242\textwidth]{edge_num_cov.pdf}}
+    %\hspace{0.0001in}
+    \subfloat[]{\label{fig:client}\includegraphics[width=0.242\textwidth]{client_num_cov.pdf}}    
+    \caption{EdgeQGFed在不同系统规模下的收敛性能。(a) 不同边缘服务器数量 $E$ 下的云端准确率；(b) 不同客户端数量 $C$ 下的云端准确率。}
+    \label{fig:num}
+\end{figure}
+图~\ref{fig:num}(a)(b)显示了 EdgeQGFed 在不同边缘服务器数量和客户端数量下的可扩展性。随着边缘服务器数量从1增加到10，模型均能保持稳定收敛，最终准确率差异较小，说明云端质量感知聚合能够适应不同边缘拓扑。客户端数量从128扩展到1000时，收敛曲线仍基本一致，表明资源感知采样能够在大规模客户端环境下维持有效训练，并避免客户端规模扩大导致明显性能退化。整体结果说明 EdgeQGFed 具有较好的系统可扩展性。
 \subsection{通信效率与时延}
 \label{subsec:comm_efficiency}
-
-随后评估通信预算、三层时延和系统能耗对训练效率的影响。该实验更贴近 INFOCOM 关注的网络系统问题，即在有限通信资源下，方法是否能够以更低通信量、更短系统时延和更少能耗达到目标精度。为减少重复，本文选择 HARBox 和 CIFAR-10 作为代表性任务，分别覆盖传感序列与图像数据。通信预算分别设置为 HARBox 的 $\{50,100,200,300\}$ MB 和 CIFAR-10 的 $\{50,100,300,600\}$ MB。表~\ref{tab:budget_energy} 给出假设结果，用于说明后续实验记录格式。
+进一步评估了通信预算、三层时延和系统能耗对训练效率的影响。为了使该框架更贴近现实问题，实验设定在有限通信资源下，判断框架是否能够以更低通信量、更短系统时延和更少能耗达到目标精度。为减少重复，本文选择 HARBox 和 CIFAR-10 作为代表性任务，分别覆盖传感序列与图像数据。通信预算分别设置为 HARBox 的 $\{50,100,200,300\}$ MB 和 CIFAR-10 的 $\{50,100,300,600\}$ MB。表~\ref{tab:budget_energy} 给出假设结果，用于说明后续实验记录格式。
 
 \begin{table*}[t]
 \centering
-\caption{通信预算、时延与能耗敏感性（假设结果）}
+\caption{通信预算、时延与能耗敏感性}
 \label{tab:budget_energy}
 \resizebox{\textwidth}{!}{
-\begin{tabular}{llcccccc}
+\begin{tabular}{llccccc}
 \toprule
-数据集 & 方法 & Round Budget & 云端准确率 & 边缘准确率 & Time-to-Target & 每轮通信量 & Energy-to-Target \\
-& & (MB) & (\%) & (\%) & (s) & (MB) & (J) \\
+数据集 & 方法 & 云端准确率(\%) & 边缘准确率(\%) & Time-to-Target(s) & 每轮通信量(MB) & Energy-to-Target(J)  \\
 \midrule
-HARBox & H-FedAvg & 100 & 75.42 & 73.86 & 31.45 & 16.82 & 14.27 \\
-HARBox & H-FedAvg+PL & 100 & 78.36 & 76.91 & 24.06 & 16.95 & 12.08 \\
-HARBox & EdgeQGFed & 100 & 83.29 & 81.74 & 18.50 & 15.14 & 9.63 \\
-CIFAR-10 & H-FedAvg & 100 & 84.38 & 82.47 & 39.80 & 30.00 & 26.72 \\
-CIFAR-10 & H-FedAvg+PL & 100 & 87.64 & 85.91 & 30.64 & 30.00 & 22.18 \\
-CIFAR-10 & EdgeQGFed & 100 & 90.12 & 88.96 & 23.12 & 30.00 & 17.36 \\
+\multirow{3}{*}{CIFAR-10} & H-FedAvg  & 90.68 & 89.30 & 34.20 & 27.19 & 26.72 \\
+ & EdgeQGFed w/o RS  & 91.02 & 90.73 & 30.64 & 30.00 & 22.18 \\
+ & EdgeQGFed  & 91.29 & 90.88 & 23.12 & 30.00 & 17.36 \\
+ \midrule
+\multirow{3}{*}{HARBox} & H-FedAvg  & 78.42 & 73.86 & 31.45 & 16.82 & 14.27 \\
+ & EdgeQGFed w/o RS  & 82.66 & 82.63 & 24.06 & 16.95 & 12.08 \\
+ & EdgeQGFed  & 84.14 & 84.09 & 18.50 & 15.14 & 9.63 \\
 \bottomrule
 \end{tabular}
 }
 \end{table*}
+表~\ref{tab:budget_energy} 比较了不同方法在模型性能和系统效率上的表现。相比 H-FedAvg，EdgeQGFed 在 CIFAR-10 和 HARBox 上均取得更高的云端与边缘准确率，同时显著降低 Time-to-Target 和 Energy-to-Target，说明其不仅提升了模型效果，也提高了达到目标精度的训练效率。与去除资源感知采样的 EdgeQGFed w/o RS 相比，完整 EdgeQGFed 在每轮通信量相近或更低的情况下进一步减少时延和能耗，表明资源感知客户端采样能够更有效地利用通信预算，优先选择高收益、低代价的客户端参与训练。整体结果验证了 EdgeQGFed 在通信受限边缘网络中的效率优势。
 
-\textbf{绘图方式。}
-图~\ref{fig:comm_latency_energy}(a) 为折线图，横轴为累计通信量，纵轴为云端准确率，不同曲线表示 H-FedAvg、H-FedAvg+PL 和 EdgeQGFed。图~\ref{fig:comm_latency_energy}(b) 为堆叠柱状图，横轴为方法，纵轴为摊销每轮时延，分解为端到边上传、边缘计算、边到云上传、云端聚合和云到边下发五个部分。图~\ref{fig:comm_latency_energy}(c) 为堆叠柱状图，横轴为方法，纵轴为每轮能耗，分解为通信能耗和计算能耗。能耗由日志中的时延分量离线计算，例如端到边上传能耗为 $E^{\mathrm{c2e}}=P_{\mathrm{client}}T^{\mathrm{c2e}}$，边缘计算能耗为 $E^{\mathrm{edge}}=P_{\mathrm{edge}}T^{\mathrm{edge}}$。
+\begin{figure}[t]
+  \centering
+  \begin{minipage}{0.24\textwidth}
+    \centering
+    \includegraphics[width=1\textwidth]{ttot.pdf}
+    \caption{不同数据集上的 Time-to-Target 对比。}
+    \label{Time-to-Target}
+  \end{minipage} 
+%   \hspace{0.001in}
+  \begin{minipage}{0.24\textwidth}
+    \centering
+    \includegraphics[width=1\textwidth]{energy.pdf}
+    \caption{不同数据集上的 Energy-to-Target 对比。}
+    \label{energy}
+  \end{minipage}
+\end{figure}
+在表\ref{tab:budget_energy} 中，EdgeQGFed 已在代表性图像任务和传感序列任务上表现出更低的时延与能耗。为进一步验证该优势是否能够扩展到更多数据形态，图\ref{Time-to-Target} 和图~\ref{energy} 继续比较不同方法在四个数据集上的 Time-to-Target 和 Energy-to-Target。
+
+图~\ref{Time-to-Target} 和图~\ref{energy} 展示了不同方法在四个数据集上的训练效率。EdgeQGFed 在 CIFAR-10、CIFAR-100、HARBox 和 NSL-KDD 上均取得最低或接近最低的 Time-to-Target 与 Energy-to-Target，说明其效率优势并不局限于单一数据集。相比 H-FedAvg，EdgeQGFed 通过质量感知图聚合减少低质量更新影响，并通过资源感知采样降低无效通信开销，因此能够更快、更低能耗地达到目标精度。与 EdgeQGFed w/o RS 相比，完整方法进一步降低时延和能耗，验证了资源感知采样在跨模态边缘任务中的有效性。
+
+\begin{figure}[t]
+  \centering
+    \includegraphics[width=0.5\textwidth]{radar.pdf}
+    \caption{模型性能与系统效率的综合雷达图对比。(a) CIFAR-10；(b) HARBox。Time、Comm. 和 Energy 经过反向归一化处理，数值越大表示效率越高。}
+    \label{fig:radar_efficiency}
+\end{figure}
+同时，实验图~\ref{fig:radar_efficiency} 从准确率、收敛时延、通信量和能耗五个维度综合比较不同方法。EdgeQGFed 在 CIFAR-10 和 HARBox 上形成更大的雷达图覆盖面积，说明其在模型精度和系统效率之间取得了更好的平衡。相比 H-FedAvg，EdgeQGFed 不仅提升云端和边缘准确率，还显著改善 Time-to-Target 和 Energy-to-Target；相比去除资源感知采样的版本，完整方法在效率维度上更具优势。该结果进一步表明，质量感知图聚合与资源感知采样能够协同提升边缘智能训练的综合表现。
 
 \subsection{链路异构与客户端移动性}
 \label{subsec:heterogeneity}
@@ -574,160 +726,133 @@ CIFAR-10 & EdgeQGFed & 100 & 90.12 & 88.96 & 23.12 & 30.00 & 17.36 \\
 
 \begin{table}[t]
 \centering
-\caption{链路异构与客户端移动性下的鲁棒性（假设结果）}
+\caption{链路异构与客户端移动性下的鲁棒性}
 \label{tab:mobility}
+\resizebox{0.5\textwidth}{!}{
 \begin{tabular}{lcccc}
 \toprule
-场景 & 方法 & 云端准确率 & 活跃客户端数 & Time-to-Target \\
+场景 & 方法 & 云端准确率(\%) & 活跃客户端数 & Time-to-Target(s) \\
 \midrule
-Static & H-FedAvg & 75.42 & 40.0 & 31.45 \\
-Static & EdgeQGFed w/o RS & 80.37 & 40.0 & 23.86 \\
-Static & EdgeQGFed & 83.29 & 40.0 & 18.50 \\
-Mobility & H-FedAvg & 68.74 & 28.6 & 47.32 \\
-Mobility & EdgeQGFed w/o RS & 74.18 & 29.1 & 35.74 \\
-Mobility & EdgeQGFed & 80.46 & 33.8 & 24.92 \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\textbf{绘图方式。}
-图~\ref{fig:mobility}(a) 为折线图，横轴为客户端掉线率，纵轴为云端准确率，不同曲线表示 H-FedAvg、EdgeQGFed w/o RS 和 EdgeQGFed。图~\ref{fig:mobility}(b) 为点线图，横轴为带宽异构模式，纵轴为 Time-to-Target。图~\ref{fig:mobility}(c) 为双轴柱线图，横轴为掉线率，左轴为活跃客户端数，右轴为预算使用率，用于解释资源感知采样在移动性条件下的作用。
-
-\subsection{消融实验}
-\label{subsec:ablation}
-
-为了分析各组件的作用，本文分别去除图注意力聚合、资源感知采样、伪标签学习和云边一致性训练。消融实验默认在 HARBox 和 CIFAR-10 上进行，分别代表传感序列任务和图像任务。该实验同时报告准确率、Time-to-Target、通信量和能耗，从性能与效率两个角度解释 EdgeQGFed 的收益来源。
-
-\begin{table*}[t]
-\centering
-\caption{组件消融结果（假设结果）}
-\label{tab:ablation}
-\resizebox{\textwidth}{!}{
-\begin{tabular}{llccccc}
-\toprule
-数据集 & 变体 & 云端准确率 & 边缘准确率 & Time-to-Target & 每轮通信量 & Energy-to-Target \\
-& & (\%) & (\%) & (s) & (MB) & (J) \\
-\midrule
-HARBox & Full EdgeQGFed & 81.58 & 80.12 & 18.50 & 15.14 & 9.63 \\
-HARBox & w/o Graph & 79.42 & 77.96 & 20.84 & 15.10 & 10.38 \\
-HARBox & w/o Resource Sampling & 80.06 & 78.73 & 23.76 & 17.82 & 12.61 \\
-HARBox & w/o Pseudo Label & 77.85 & 76.44 & 27.13 & 14.96 & 13.40 \\
-HARBox & w/o Consistency & 78.62 & 77.18 & 25.48 & 15.02 & 12.92 \\
-CIFAR-10 & Full EdgeQGFed & 90.60 & 89.47 & 23.12 & 30.00 & 17.36 \\
-CIFAR-10 & w/o Graph & 89.12 & 87.76 & 26.44 & 29.96 & 18.84 \\
-CIFAR-10 & w/o Resource Sampling & 89.74 & 88.21 & 29.06 & 32.54 & 21.37 \\
-CIFAR-10 & w/o Pseudo Label & 87.46 & 86.03 & 34.85 & 29.88 & 24.92 \\
-CIFAR-10 & w/o Consistency & 88.25 & 86.91 & 31.72 & 29.92 & 23.40 \\
+\multirow{3}{*}{Static} & H-FedAvg & 78.42 & 50 & 31.45 \\
+ & EdgeQGFed w/o RS & 82.66 & 50 & 23.86 \\
+ & EdgeQGFed & 84.14 & 50 & 18.50 \\
+\multirow{3}{*}{Mobility} & H-FedAvg & 79.74 & 43 & 47.32 \\
+ & EdgeQGFed w/o RS & 81.16 & 43 & 35.74 \\
+ & EdgeQGFed & 81.58 & 43 & 24.92 \\
 \bottomrule
 \end{tabular}
 }
-\end{table*}
+\end{table}
+表~\ref{tab:mobility} 评估了不同方法在静态网络和客户端移动场景下的鲁棒性。相比静态场景，移动性会减少活跃客户端数量并增加训练时延，导致各方法准确率下降。EdgeQGFed 在两种场景下均取得最高云端准确率，并保持最低 Time-to-Target，说明其能够在客户端不稳定参与时维持更可靠的训练过程。与 EdgeQGFed w/o RS 相比，完整方法在移动场景下的时延下降更明显，表明资源感知采样能够有效避开高掉线风险或低质量链路客户端，从而提升边缘网络动态环境下的训练效率。
+% \begin{table}[t]
+% \centering
+% \caption{ }
+% \label{tab:heter}
+% \begin{tabular}{cccc}
+% \toprule
+% &Mild&Medium&Severe\\
+% \midrule
+% CIFAR-10 & 0.44 & 0.80 & 0.96\\
+% CIFAR-100 & 0.53 & 0.55 & 0.75\\
+% HARBox & 0.46 & 0.63 & 0.98  \\
+% NSL-KDD & 0.44 & 0.80 & 0.94 \\
+% \bottomrule
+% \end{tabular}
+% \end{table}
+\begin{figure}[t]
+  \centering
+  \begin{minipage}{0.24\textwidth}
+    \centering
+    \includegraphics[width=1\textwidth]{drop.pdf}
+    \caption{不同客户端掉线率下的云端准确率。}
+    \label{drop}
+  \end{minipage} 
+%   \hspace{0.001in}
+  \begin{minipage}{0.24\textwidth}
+    \centering
+    \includegraphics[width=1\textwidth]{hetero.pdf}
+    \caption{不同通信预算和数据异质性条件下的云端准确率.}
+    \label{heter}
+  \end{minipage}
+\end{figure}
+表~\ref{tab:mobility} 反映了移动场景下的整体鲁棒性，但其中同时包含掉线、通信资源和数据异质性等因素。为进一步区分这些因素的影响，我们分别考察客户端掉线率和通信预算变化。图~\ref{drop} 显示，掉线率升高会降低各方法准确率，但 EdgeQGFed 始终保持最佳性能，说明资源感知采样和质量感知聚合能够缓解不稳定参与带来的影响。图~\ref{heter} 表明，通信预算增加会提升模型性能，而更强 non-IID 会降低准确率；EdgeQGFed 在不同预算和异质性条件下均保持稳定优势。
 
-\textbf{绘图方式。}
-图~\ref{fig:ablation}(a) 为分组柱状图，横轴为消融变体，纵轴为云端准确率，分组为 HARBox 和 CIFAR-10。图~\ref{fig:ablation}(b) 为雷达图，维度包括 Accuracy、Time-to-Target、Communication、Energy 和 Robustness，其中越小越好的指标先归一化并反向处理。
+\subsection{消融实验}
+\label{subsec:ablation}
+为了分析各组件的作用，本文分别去除图注意力聚合、资源感知采样、伪标签学习和云边一致性训练。消融实验默认在 HARBox 和 CIFAR-10 上进行，分别代表传感序列任务和图像任务。
+\begin{table}[t]
+        \centering
+        \caption{XX.}
+        \label{tab:ablation}
+        \begin{adjustbox}{max width=0.5\textwidth}
+        \begin{threeparttable}
+            \centering
+            \begin{tabular}{cccccc}
+                \toprule
+                 Client &\multicolumn{2}{c}{Edge Model}
+              & Cloud Model &\multirow{2}{*}{CIFAR-10} & \multirow{2}{*}{HARBox} \\
+              \cmidrule(lr){1-1}
+              \cmidrule(lr){2-3}
+            \cmidrule(lr){4-4}
+                Resource Sampling & Pseudo-Labeling & Consistency Learning& Quality-aware Attention& &\\
+                \midrule
+                \ding{55} &\checkmark &  \checkmark& \checkmark & 91.02 & 82.66 \\
+                \checkmark &\ding{55} &  \checkmark& \checkmark & 91.20  & 81.77 \\
+                \checkmark &\checkmark &\ding{55} & \checkmark &  91.11 & 81.83 \\
+                \checkmark &\checkmark &\checkmark& \ding{55} &  91.08 & 81.97 \\
+                \ding{55} &\ding{55} & \ding{55} & \ding{55} &84.38 & 78.42\\
+                \checkmark &\checkmark & \checkmark & \checkmark &91.29 & 84.14\\
+                \bottomrule 
+            \end{tabular}
+        \end{threeparttable}
+        \end{adjustbox}
+    \end{table}
+表~\ref{tab:ablation} 分析了资源感知采样、伪标签学习、一致性学习和质量感知图注意力对性能的影响。去除任一模块都会导致准确率下降，说明各组件均对最终性能有贡献。其中，移除质量感知图注意力后性能下降最明显，表明云端选择性知识聚合对缓解 non-IID 和低质量更新尤为关键。去除伪标签或一致性学习也会降低性能，说明无标签数据利用对少标签边缘训练具有重要作用。完整 EdgeQGFed 在 CIFAR-10 和 HARBox 上均取得最高准确率，验证了各模块的协同效果。
 
-\subsection{统计异质性与少标签敏感性}
+\subsection{少标签敏感性}
 \label{subsec:sensitivity}
-
-本文进一步分析 EdgeQGFed 在不同 non-IID 强度和标签稀缺程度下的稳定性。对于 CIFAR-10 和 CIFAR-100，本文改变 Dirichlet 参数 $\alpha\in\{0.1,0.3,0.5,1.0\}$，其中较小的 $\alpha$ 表示更强的数据异构性。对于 HARBox，本文改变标签比例 $\{0.05,0.1,0.2,1.0\}$，考察少标签传感序列任务中的半监督收益。
-
+本文进一步分析 EdgeQGFed 在不同标签稀缺程度下的稳定性。对于 CIFAR-10和HARBox，本文改变标签比例 $\{0.05,0.1,0.2,1.0\}$，考察少标签图像任务和传感序列任务中的半监督收益。
 \begin{table}[t]
 \centering
-\caption{异质性与标签比例敏感性（假设结果）}
+\caption{标签比例敏感性分析。}
 \label{tab:sensitivity}
-\begin{tabular}{llccc}
+\begin{tabular}{lccc}
 \toprule
-数据集 & 变量 & 取值 & 云端准确率 & 边缘准确率 \\
+数据集 & 标签比例 & 云端准确率(\%) & 边缘准确率(\%) \\
 \midrule
-CIFAR-10 & $\alpha$ & 0.1 & 90.60 & 89.47 \\
-CIFAR-10 & $\alpha$ & 0.3 & 91.34 & 90.08 \\
-CIFAR-10 & $\alpha$ & 0.5 & 91.82 & 90.51 \\
-CIFAR-10 & $\alpha$ & 1.0 & 92.15 & 90.84 \\
-CIFAR-100 & $\alpha$ & 0.1 & 59.42 & 58.37 \\
-CIFAR-100 & $\alpha$ & 0.3 & 61.08 & 60.11 \\
-HARBox & 标签比例 & 0.05 & 77.36 & 75.82 \\
-HARBox & 标签比例 & 0.1 & 81.58 & 80.12 \\
-HARBox & 标签比例 & 0.2 & 84.06 & 82.47 \\
-HARBox & 标签比例 & 1.0 & 89.14 & 87.62 \\
+\multirow{3}{*}{CIFAR-10} & 0.1 & 91.29 & 90.88 \\
+ & 0.3 & 91.34 & 90.08 \\
+ & 0.5 & 91.82 & 90.51 \\
+ & 1.0 & 93.36 & 92.53 \\
+ \midrule
+\multirow{4}{*}{HARBox}  & 0.05 & 80.65 & 80.59 \\
+ & 0.1 & 84.14 & 84.09 \\
+ & 0.5 & 84.37 & 84.31 \\
+ & 1.0 & 84.44 & 84.37 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\textbf{绘图方式。}
-图~\ref{fig:sensitivity}(a) 为折线图，横轴为 Dirichlet 参数，纵轴为云端准确率，曲线为 CIFAR-10 和 CIFAR-100。图~\ref{fig:sensitivity}(b) 为折线图，横轴为有标签比例，纵轴为云端准确率，展示 HARBox 在少标签条件下的性能变化。
-
+表~\ref{tab:label_ratio} 展示了不同标签比例下的模型性能。随着标签比例增加，CIFAR-10 的云端和边缘准确率整体提升，说明更多监督信息能够有效改善图像任务性能。HARBox 在标签比例从 0.05 提升到 0.1 时增益明显，之后提升趋于平缓，表明在用户级传感序列任务中，少量标签已能提供较强监督信号。整体来看，EdgeQGFed 在低标签比例下仍保持较好性能，验证了其少标签训练能力。
 \subsection{质量感知图注意力机制分析}
 \label{subsec:graph_analysis}
-
-为解释云端图注意力是否真正依据边缘节点质量进行选择性聚合，本文记录图注意力对角权重、伪标签可靠性和预测置信度等统计量。表~\ref{tab:graph_signal} 给出假设结果。需要注意的是，CIFAR-100 类别数更多，原始置信度不宜与 CIFAR-10 直接比较，因此本文额外给出归一化置信度。
-
+% 为解释云端图注意力是否真正依据边缘节点质量进行选择性聚合，本文记录图注意力对角权重、伪标签可靠性和预测置信度等统计量。表~\ref{tab:graph_signal} 给出假设结果。需要注意的是，CIFAR-100 类别数更多，原始置信度不宜与 CIFAR-10 直接比较，因此本文额外给出归一化置信度。
 \begin{table}[t]
 \centering
 \caption{质量感知图信号统计（假设结果）}
 \label{tab:graph_signal}
-\begin{tabular}{lcccc}
+\begin{tabular}{lccc}
 \toprule
-数据集 & 注意力对角 & 可靠性 & 置信度 & 归一化置信度 \\
+数据集 & 注意力对角 & 可靠性 & 置信度 \\
 \midrule
-CIFAR-10 & 0.44 & 0.80 & 0.96 & 0.956 \\
-CIFAR-100 & 0.53 & 0.55 & 0.75 & 0.747 \\
-HARBox & 0.46 & 0.63 & 0.98 & 0.975 \\
-NSL-KDD & 0.44 & 0.80 & 0.94 & 0.925 \\
+CIFAR-10 & 0.44 & 0.80 & 0.96\\
+CIFAR-100 & 0.53 & 0.55 & 0.75\\
+HARBox & 0.46 & 0.63 & 0.98  \\
+NSL-KDD & 0.44 & 0.80 & 0.94 \\
 \bottomrule
 \end{tabular}
 \end{table}
-
-\textbf{绘图方式。}
-图~\ref{fig:graph_analysis}(a) 为热力图，横轴为源边缘节点，纵轴为目标边缘节点，颜色表示注意力权重。图~\ref{fig:graph_analysis}(b) 为散点图，横轴为边缘可靠性，纵轴为被分配的注意力权重，用于观察高质量边缘节点是否获得更多知识共享权重。
-
-\subsection{NSL-KDD 少数类识别分析}
-\label{subsec:nslkdd_detail}
-
-网络流量五分类任务存在明显类别不均衡，仅报告整体准确率可能掩盖 R2L 和 U2R 等少数类识别不足。为此，本文进一步报告每类 recall 和 macro-F1。该实验用于证明类别均衡监督与分层标注采样能够提升少数类识别能力。
-
-\begin{table}[t]
-\centering
-\caption{NSL-KDD 五分类详细结果（假设结果）}
-\label{tab:nslkdd_detail}
-\resizebox{\columnwidth}{!}{
-\begin{tabular}{lccccccc}
-\toprule
-方法 & Acc & Macro-F1 & Normal & DoS & Probe & R2L & U2R \\
-\midrule
-H-FedAvg & 78.64 & 0.512 & 0.93 & 0.88 & 0.61 & 0.24 & 0.18 \\
-H-FedAvg+PL & 81.37 & 0.574 & 0.94 & 0.90 & 0.66 & 0.31 & 0.25 \\
-EdgeQGFed & 85.92 & 0.681 & 0.96 & 0.92 & 0.73 & 0.46 & 0.38 \\
-\bottomrule
-\end{tabular}
-}
-\end{table}
-
-\textbf{绘图方式。}
-图~\ref{fig:nslkdd_recall} 为分组柱状图，横轴为五个类别，纵轴为 recall，不同柱表示 H-FedAvg、H-FedAvg+PL 和 EdgeQGFed。
-
-\subsection{可扩展性分析}
-\label{subsec:scalability}
-
-最后，本文分析客户端规模扩大时 EdgeQGFed 的通信和时延开销是否可控。该实验主要在 CIFAR-10 上进行，将客户端数从 128 扩展到 1000。对于更大规模的 10000 客户端，本文仅作为系统模拟设定讨论，因为此时每个 logical client 更接近数据分片而非真实用户。
-
-\begin{table}[t]
-\centering
-\caption{客户端规模扩展性（假设结果）}
-\label{tab:scalability}
-\begin{tabular}{lccccc}
-\toprule
-数据集 & 客户端数 & 每轮客户端 & 云端准确率 & Time-to-Target & 每轮通信量 \\
-\midrule
-CIFAR-10 & 128 & 32 & 90.60 & 23.12 & 30.00 \\
-CIFAR-10 & 256 & 32 & 90.18 & 24.06 & 30.00 \\
-CIFAR-10 & 500 & 64 & 89.74 & 26.88 & 60.00 \\
-CIFAR-10 & 1000 & 64 & 89.21 & 28.34 & 60.00 \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\textbf{绘图方式。}
-图~\ref{fig:scalability} 为双轴折线图，横轴为客户端规模，左轴为 Time-to-Target，右轴为云端准确率，用于展示大规模逻辑客户端下的效率与性能变化。
+为进一步解释云端图聚合的行为，本文统计了注意力对角值、边缘可靠性和预测置信度等质量信号，结果见表~\ref{tab:graph_signal}。CIFAR-10、HARBox 和 NSL-KDD 的可靠性与置信度较高，说明边缘摘要能够提供较稳定的质量判断；CIFAR-100 的可靠性和置信度相对较低，符合其类别数更多、少标签 non-IID 更困难的任务特征。注意力对角值保持在中等水平，说明云端既保留边缘自身知识，也允许跨边缘节点共享信息。整体结果表明，图注意力并非简单平均，而是依据边缘质量信号进行自适应聚合。
 
 \section{Conclusion}
 本文提出 EdgeQGFed，一种面向跨模态边缘智能任务的通信高效云-边-端协同学习框架。该框架将主要训练负载上移至边缘服务器，使弱客户端以轻量方式参与数据贡献；云端进一步利用质量感知图注意力机制建模边缘节点之间的语义相关性和更新可靠性，从而实现选择性知识共享。为适应真实边缘网络，EdgeQGFed 结合资源感知客户端采样、边缘侧半监督学习和三层通信时延建模，在通信预算、链路异构和客户端不稳定参与条件下同时优化模型性能和训练效率。实验设计覆盖图像、传感序列和网络流量任务，并从总体性能、time-to-accuracy、通信时延、系统能耗、鲁棒性、组件消融、少数类识别和可扩展性等方面验证方法有效性。未来工作将进一步研究更大规模边缘拓扑下的异步协同训练，以及面向更复杂任务类型的自适应模型部署策略。

@@ -4,6 +4,7 @@ import os
 import random
 import time
 from collections import OrderedDict
+from contextlib import nullcontext
 
 import numpy as np
 import torch
@@ -19,6 +20,8 @@ from tree.tree import clone_aggregation_tensors, create_tree
 from utils.evaluate import evaluate
 from utils.losses import get_loss_function
 from utils.warmup import get_warm_up_value
+from utils.e1_logging import E1RunLogger
+from utils.e1_random import e1_random_stream
 import swanlab
 
 
@@ -85,14 +88,29 @@ def compute_labeled_prototypes(features, labels, is_labeled, num_classes):
     return prototypes, counts
 
 
-def average_edge_parameters(edge_summaries):
+def average_edge_parameters(edge_summaries, weighting='uniform'):
+    """Standalone average helper; explicit weighting is required for E1 N/quality averages."""
     if not edge_summaries:
         return None
+    if weighting not in {'uniform', 'sample', 'sample_quality'}:
+        raise ValueError(f'Unknown source weighting: {weighting}')
+    weights = None
+    if weighting != 'uniform':
+        weights = torch.tensor([s['batch_size'] for s in edge_summaries], dtype=torch.float32,
+                               device=edge_summaries[0]['parameters'][0].device)
+        if weighting == 'sample_quality':
+            weights *= torch.tensor([1.0 + s['pseudo_quality'] for s in edge_summaries],
+                                    dtype=torch.float32, device=weights.device)
+        weights = HierarchicalGraphAggregator._normalize_weights(weights)
     avg_parameters = []
     for param_index in range(len(edge_summaries[0]['parameters'])):
         params = [summary['parameters'][param_index] for summary in edge_summaries]
         if params[0].is_floating_point() or params[0].is_complex():
-            avg_parameters.append(torch.stack(params).mean(dim=0))
+            if weights is None:
+                avg_parameters.append(torch.stack(params).mean(dim=0))
+            else:
+                avg_parameters.append(sum((weight * param for weight, param in zip(weights, params)),
+                                          torch.zeros_like(params[0])))
         else:
             avg_parameters.append(params[0].clone())
     return avg_parameters
@@ -293,7 +311,7 @@ def build_train_log_metrics(metrics, config):
             'avg_edge_confidence': metrics.get('avg_edge_confidence'),
         })
 
-    if bool(OmegaConf.select(config, 'models.graph.use', default=False)):
+    if 'graph_attention_mean' in metrics:
         log_metrics.update({
             'graph_attention_mean': metrics.get('graph_attention_mean'),
             'graph_attention_diag': metrics.get('graph_attention_diag'),
@@ -416,6 +434,7 @@ def evaluate_and_log(
     target_accuracy,
     best_metrics,
     config,
+    e1_logger=None,
 ):
     val_metrics = evaluate(
         encoded_model=encoder_model,
@@ -442,6 +461,8 @@ def evaluate_and_log(
         'time_to_target_accuracy_s': first_target_time if first_target_time is not None else -1.0,
         'wall_time_to_target_accuracy_s': first_target_wall_time if first_target_wall_time is not None else -1.0,
     }
+    if e1_logger is not None:
+        e1_logger.record_evaluation(current_steps, val_metrics, edge_val_metrics, info_metrics)
     print('\nValidation Metrics:')
     print(f"Cloud Loss: {val_metrics['val_loss']:.4f}")
     print(f"Cloud Accuracy: {val_metrics['val_accuracy']:.2f}%")
@@ -710,7 +731,16 @@ def edge_run_loop(
 
 
 def train(config):
-    set_random_seed(int(OmegaConf.select(config, 'datasets.seed', default=0)))
+    seed = int(OmegaConf.select(config, 'datasets.seed', default=0))
+    set_random_seed(seed)
+    paired_inputs = bool(OmegaConf.select(config, 'experiment.paired_inputs', default=False))
+    if paired_inputs and int(config.datasets.edge_num_workers) != 0:
+        raise ValueError('E1 paired_inputs requires datasets.edge_num_workers=0 for fixed batch/views')
+    # Validate modes before constructing encoders/datasets (which may otherwise download).
+    graph_aggregator = HierarchicalGraphAggregator(config)
+    e1_logger = E1RunLogger(config, graph_aggregator) if bool(
+        OmegaConf.select(config, 'experiment.e1_logging', default=False)
+    ) else None
     device = torch.device(f"cuda:{config.train.device}" if torch.cuda.is_available() else 'cpu')
     if torch.cuda.is_available():
         torch.cuda.set_device(config.train.device)
@@ -751,11 +781,13 @@ def train(config):
         pin_memory=config.datasets.pin_memory,
     )
     encoder_model = get_encoder(config).to(device)
-    graph_aggregator = HierarchicalGraphAggregator(config)
 
     tree = create_tree(config)
     tree.move_to_device(device)
     sync_edge_models_from_cloud(tree)
+    if e1_logger is not None:
+        e1_logger.record_inputs(tree, config, encoder_model)
+        print(f'E1 records: {e1_logger.directory}')
 
     num_classes = get_n_classes(config.datasets.name)
     class_weights = build_class_weights_from_labeled_clients(tree, num_classes, config, device)
@@ -796,6 +828,7 @@ def train(config):
         target_accuracy=config.network.target_accuracy,
         best_metrics=best_metrics,
         config=config,
+        e1_logger=e1_logger,
     )
     while current_steps < config.train.total_steps:
         round_start_wall = time.perf_counter()
@@ -808,19 +841,23 @@ def train(config):
         )
         sync_this_round = current_steps % config.train.ema_update_step == 0
         include_sync_in_budget = bool(OmegaConf.select(config, 'network.budget.include_model_sync', default=True))
-        sampled_clients = tree.sample_clients(config, include_model_sync=include_sync_in_budget and sync_this_round)
-        edge_summaries, train_metrics, network_state = edge_run_loop(
-            tree=tree,
-            sampled_clients=sampled_clients,
-            encoder_model=encoder_model,
-            config=config,
-            current_steps=current_steps,
-            consistency_weight=consistency_weight,
-            classification_criterion=classification_criterion,
-            consistency_criterion=consistency_criterion,
-            device=device,
-            update=sync_this_round,
-        )
+        with e1_random_stream(seed, 'selection', current_steps) if paired_inputs else nullcontext():
+            sampled_clients = tree.sample_clients(config, include_model_sync=include_sync_in_budget and sync_this_round)
+        with e1_random_stream(seed, 'edge_step', current_steps, device) if paired_inputs else nullcontext():
+            edge_summaries, train_metrics, network_state = edge_run_loop(
+                tree=tree,
+                sampled_clients=sampled_clients,
+                encoder_model=encoder_model,
+                config=config,
+                current_steps=current_steps,
+                consistency_weight=consistency_weight,
+                classification_criterion=classification_criterion,
+                consistency_criterion=consistency_criterion,
+                device=device,
+                update=sync_this_round,
+            )
+        if e1_logger is not None:
+            e1_logger.record_participation(current_steps, sampled_clients, network_state)
 
         train_metrics['consistency_weight'] = consistency_weight
         client_upload_mb = sum(network_state['client_upload_mb_by_edge'].values())
@@ -828,29 +865,26 @@ def train(config):
         cloud_downlink_mb = 0.0
         cloud_downlink_mb_by_edge = {}
         if edge_summaries is not None:
-            if config.models.graph.use:
-                aggregation_result = graph_aggregator.aggregate(edge_summaries)
-                if aggregation_result['global_parameters'] is not None:
-                    global_parameters = aggregation_result['global_parameters']
-                    tree.root.model.update_by_parameters(global_parameters)
-                    for edge in tree.root.children:
-                        personalized_parameters = aggregation_result['personalized_parameters'].get(edge.name)
-                        edge_parameters = personalized_parameters if personalized_parameters is not None else global_parameters
-                        if edge_parameters is not None:
-                            edge.set_parameters(edge_parameters)
-                            edge_downlink_mb = parameter_list_megabytes(edge_parameters)
-                            cloud_downlink_mb_by_edge[edge.name] = edge_downlink_mb
-                            cloud_downlink_mb += edge_downlink_mb
-                    train_metrics.update(aggregation_result['metrics'])
-            else:
-                avg_parameters = average_edge_parameters(edge_summaries)
-                if avg_parameters is not None:
-                    tree.root.model.update_by_parameters(avg_parameters)
-                    avg_parameters_mb = parameter_list_megabytes(avg_parameters)
-                    for edge in tree.root.children:
-                        edge.set_parameters(avg_parameters)
-                        cloud_downlink_mb_by_edge[edge.name] = avg_parameters_mb
-                    cloud_downlink_mb = len(tree.root.children) * avg_parameters_mb
+            aggregation_result = graph_aggregator.aggregate(edge_summaries)
+            # Capture decay BEFORE AEMA.update_decay(), not the value for the next update.
+            ema_decay_used = tree.root.model.decay
+            if aggregation_result['global_parameters'] is not None:
+                global_parameters = aggregation_result['global_parameters']
+                tree.root.model.update_by_parameters(global_parameters)
+                for edge in tree.root.children:
+                    personalized_parameters = aggregation_result['personalized_parameters'].get(edge.name)
+                    edge_parameters = personalized_parameters if personalized_parameters is not None else global_parameters
+                    edge.set_parameters(edge_parameters)
+                    edge_downlink_mb = parameter_list_megabytes(edge_parameters)
+                    cloud_downlink_mb_by_edge[edge.name] = edge_downlink_mb
+                    cloud_downlink_mb += edge_downlink_mb
+                train_metrics.update(aggregation_result['metrics'])
+            if e1_logger is not None:
+                e1_logger.record_aggregation(
+                    current_steps, aggregation_result, edge_summaries,
+                    tree.root.model.algorithm, ema_decay_used,
+                    list(cloud_downlink_mb_by_edge),
+                )
             train_metrics['ema_decay'] = tree.root.model.decay
 
         client_latency_candidates = []
@@ -983,9 +1017,30 @@ def train(config):
                 target_accuracy=config.network.target_accuracy,
                 best_metrics=best_metrics,
                 config=config,
+                e1_logger=e1_logger,
             )
 
         current_steps += 1
+
+    if e1_logger is not None:
+        # Preserve the fixed horizon before the existing best-validation reload below.
+        if e1_logger.last_evaluation['step'] != current_steps:
+            best_metrics, first_target_time, first_target_wall_time = evaluate_and_log(
+                encoder_model, tree, valloader, classification_criterion, device, current_steps,
+                cumulative_comm_mb, cumulative_estimated_latency_s, first_target_time,
+                first_target_wall_time, train_start_wall, config.network.target_accuracy,
+                best_metrics, config, e1_logger=e1_logger,
+            )
+        last_evaluation = e1_logger.last_evaluation
+        save_tree_checkpoint(tree, str(e1_logger.directory / 'final.pth'), current_steps,
+                             last_evaluation['cloud'], last_evaluation['shared_split_edge_mean'])
+        final_test = evaluate(encoder_model, tree.root.model, testloader,
+                              classification_criterion, device, extra_metrics=_use_nslkdd_metrics(config))
+        final_edges = evaluate_edges(encoder_model, tree, testloader,
+                                    classification_criterion, device, extra_metrics=_use_nslkdd_metrics(config))
+        e1_logger.record_evaluation(current_steps, final_test, final_edges,
+                                    last_evaluation['costs'], split='fixed_horizon_test')
+        print_test_metrics('Fixed-Horizon Test Metrics (E1)', final_test, final_edges)
 
     print_best_metrics(best_metrics)
     if best_metrics.get('checkpoint_path') is not None:
