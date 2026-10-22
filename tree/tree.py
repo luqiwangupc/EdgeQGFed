@@ -16,6 +16,8 @@ from datasets.SemiDatasets import (
 )
 from models.GetModel import get_model
 from models.classifier import ENCODER_FEATURE_DIMS
+from datasets.parallel_clients import ParallelClientBatchLoader
+from utils.e1_random import e1_random_stream
 
 
 def resolve_aggregation_mode(config):
@@ -107,6 +109,8 @@ class Tree:
         self.edge_batch_loaders: Dict[str, DataLoader] = {}
         self.edge_batch_samplers: Dict[str, MutableEdgeBatchSampler] = {}
         self.config = None
+        self.client_batch_loader = None
+        self.active_round_clients = {}
 
     def find_node(self, name, node=None):
         if node is None:
@@ -191,6 +195,20 @@ class Tree:
         print(f"Registered {len(self.client_registry)} clients across {len(self.edge_to_clients)} edges".center(80, '*'))
 
     def init_edge_batch_loaders(self, config):
+        client_workers = OmegaConf.select(config, 'datasets.client_batch_workers')
+        if client_workers is not None:
+            self.client_batch_loader = ParallelClientBatchLoader(
+                list(self.client_registry.values()), config.datasets.batch_size,
+                int(OmegaConf.select(config, 'datasets.seed', default=0)),
+                workers=int(client_workers),
+                prefetch_factor=int(OmegaConf.select(config, 'datasets.client_batch_prefetch_factor', default=1)),
+                pin_memory=config.datasets.pin_memory,
+                labeled_fraction=float(OmegaConf.select(config, 'datasets.balanced_labeled_batch_fraction', default=0.0)),
+                class_sampling_weights=OmegaConf.select(config, 'datasets.class_sampling_weights', default=None),
+            )
+            self.edge_batch_loaders = {}
+            self.edge_batch_samplers = {}
+            return
         num_workers = int(config.datasets.edge_num_workers)
         prefetch_factor = int(config.datasets.edge_prefetch_factor) if num_workers > 0 else None
         persistent_workers = num_workers > 0
@@ -311,6 +329,8 @@ class Tree:
     def get_edge_batch(self, client_ids):
         if not client_ids:
             return None
+        if self.client_batch_loader is not None:
+            return self.client_batch_loader.get_edge_batch(client_ids)
         edge_name = self.client_registry[client_ids[0]]['edge_name']
         sampler = self.edge_batch_samplers.get(edge_name)
         dataloader = self.edge_batch_loaders.get(edge_name)
@@ -320,6 +340,24 @@ class Tree:
         if len(sampler) == 0:
             return None
         return next(iter(dataloader))
+
+    def prepare_client_batches(self, sampled_clients, step):
+        """Freeze successful clients, then prefetch client tasks before ES GPU work."""
+        seed = int(OmegaConf.select(self.config, 'datasets.seed', default=0))
+        active = {}
+        for edge in self.root.children:
+            active[edge.name] = []
+            for client_id in sampled_clients.get(edge.name, []):
+                with e1_random_stream(seed, f'client_availability:{client_id}', step):
+                    succeeded = random.random() >= self.get_client_drop_probability(client_id, self.config)
+                if succeeded:
+                    active[edge.name].append(client_id)
+        self.active_round_clients = active
+        self.client_batch_loader.prepare(active, step)
+
+    def close_batch_loaders(self):
+        if self.client_batch_loader is not None:
+            self.client_batch_loader.close()
 
     def _estimate_client_upload_mb(self):
         views = int(self.config.network.client_view_count)

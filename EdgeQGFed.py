@@ -4,7 +4,7 @@ import os
 import random
 import time
 from collections import OrderedDict
-from contextlib import nullcontext
+from contextlib import ExitStack, nullcontext
 
 import numpy as np
 import torch
@@ -22,6 +22,7 @@ from utils.losses import get_loss_function
 from utils.warmup import get_warm_up_value
 from utils.e1_logging import E1RunLogger
 from utils.e1_random import e1_random_stream
+from datasets.parallel_clients import initialize_cpu_worker
 import swanlab
 
 
@@ -50,6 +51,19 @@ def set_random_seed(seed):
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
+
+def configure_cpu_threads(config):
+    threads = OmegaConf.select(config, 'train.cpu_threads')
+    if threads is None and OmegaConf.select(config, 'datasets.client_batch_workers') is not None:
+        threads = 2
+    if threads is not None:
+        threads = int(threads)
+        if threads < 1:
+            raise ValueError('train.cpu_threads must be >= 1')
+        if torch.get_num_threads() != threads:
+            torch.set_num_threads(threads)
+        OmegaConf.update(config, 'train.cpu_threads', threads, force_add=True)
 
 
 def compute_consistency_loss(consistency_criterion, student_probs, teacher_probs, criterion_name):
@@ -529,15 +543,17 @@ def edge_run_loop(
     selected_client_count_by_edge = {}
     dropped_client_count_by_edge = {}
 
+    if tree.client_batch_loader is not None:
+        tree.prepare_client_batches(sampled_clients, current_steps)
+
     for edge in cloud_node.children:
         client_ids = sampled_clients.get(edge.name, [])
         if not client_ids:
             continue
 
         selected_client_count_by_edge[edge.name] = len(client_ids)
-        active_client_ids = [
-            client_id
-            for client_id in client_ids
+        active_client_ids = tree.active_round_clients.get(edge.name, []) if tree.client_batch_loader is not None else [
+            client_id for client_id in client_ids
             if random.random() >= tree.get_client_drop_probability(client_id, config)
         ]
         dropped_client_count_by_edge[edge.name] = len(client_ids) - len(active_client_ids)
@@ -727,15 +743,26 @@ def edge_run_loop(
         'selected_client_count_by_edge': selected_client_count_by_edge,
         'dropped_client_count_by_edge': dropped_client_count_by_edge,
     }
+    if tree.client_batch_loader is not None:
+        network_state['client_batch_plan'] = tree.client_batch_loader.batch_plan
     return edge_summaries if update else None, metrics, network_state
 
 
 def train(config):
+    with ExitStack() as resources:
+        return _train(config, resources)
+
+
+def _train(config, resources):
+    configure_cpu_threads(config)
     seed = int(OmegaConf.select(config, 'datasets.seed', default=0))
     set_random_seed(seed)
     paired_inputs = bool(OmegaConf.select(config, 'experiment.paired_inputs', default=False))
-    if paired_inputs and int(config.datasets.edge_num_workers) != 0:
-        raise ValueError('E1 paired_inputs requires datasets.edge_num_workers=0 for fixed batch/views')
+    client_workers = OmegaConf.select(config, 'datasets.client_batch_workers')
+    if paired_inputs and client_workers is None and int(config.datasets.edge_num_workers) != 0:
+        raise ValueError('Legacy paired_inputs requires edge_num_workers=0; use --client-workers for parallel client batches')
+    if client_workers is not None and int(client_workers) < 0:
+        raise ValueError('datasets.client_batch_workers must be >= 0')
     # Validate modes before constructing encoders/datasets (which may otherwise download).
     graph_aggregator = HierarchicalGraphAggregator(config)
     e1_logger = E1RunLogger(config, graph_aggregator) if bool(
@@ -765,12 +792,18 @@ def train(config):
     else:
         print('Warning: datasets.val_ratio <= 0, using the official test split for validation/model selection.')
         valset = FedSemiDataset(labeled_ratio=1, train=False, transform=transform, data_name=config.datasets.name)
+    eval_options = {}
+    if client_workers is not None and int(config.datasets.eval_num_workers) > 0:
+        # Avoid forking an initialized CUDA / SDK / CPU-thread-pool process.
+        eval_options = dict(multiprocessing_context='spawn', persistent_workers=True,
+                            worker_init_fn=initialize_cpu_worker)
     valloader = DataLoader(
         valset,
         batch_size=config.datasets.batch_size,
         shuffle=False,
         num_workers=config.datasets.eval_num_workers,
         pin_memory=config.datasets.pin_memory,
+        **eval_options,
     )
     testset = FedSemiDataset(labeled_ratio=1, train=False, transform=transform, data_name=config.datasets.name)
     testloader = DataLoader(
@@ -779,10 +812,19 @@ def train(config):
         shuffle=False,
         num_workers=config.datasets.eval_num_workers,
         pin_memory=config.datasets.pin_memory,
+        **eval_options,
     )
     encoder_model = get_encoder(config).to(device)
 
     tree = create_tree(config)
+    resources.callback(tree.close_batch_loaders)
+    if client_workers is not None:
+        # Release evaluation pools as well, including on an exception.
+        resources.callback(close_persistent_loader, valloader)
+        resources.callback(close_persistent_loader, testloader)
+        print(f'Input protocol: client_keyed_v2; client workers={client_workers}; '
+              f'CPU threads={torch.get_num_threads()}; prefetch/client worker='
+              f'{OmegaConf.select(config, "datasets.client_batch_prefetch_factor", default=1)}')
     tree.move_to_device(device)
     sync_edge_models_from_cloud(tree)
     if e1_logger is not None:
@@ -1064,11 +1106,34 @@ def train(config):
         print_test_metrics('Final Test Metrics at Best Validation Checkpoint', best_test_metrics, best_edge_test_metrics)
 
 
+def close_persistent_loader(loader):
+    iterator = getattr(loader, '_iterator', None)
+    if iterator is not None:
+        shutdown = getattr(iterator, '_shutdown_workers', None)
+        if shutdown is not None:
+            shutdown()
+        loader._iterator = None
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', default='config/formated_config.yaml')
+    parser.add_argument('--client-workers', type=int, default=None,
+                        help='Opt into client_keyed_v2: 0=serial reference, >0=spawn client-batch workers.')
+    parser.add_argument('--cpu-threads', type=int, default=None,
+                        help='Main-process PyTorch CPU threads (client mode defaults to 2).')
     args = parser.parse_args()
     config = OmegaConf.load(args.config)
+    if args.client_workers is not None:
+        if args.client_workers < 0:
+            parser.error('--client-workers must be >= 0')
+        OmegaConf.update(config, 'datasets.client_batch_workers', args.client_workers, force_add=True)
+    if args.cpu_threads is not None:
+        if args.cpu_threads < 1:
+            parser.error('--cpu-threads must be >= 1')
+        OmegaConf.update(config, 'train.cpu_threads', args.cpu_threads, force_add=True)
+    # Apply the cap before SDK startup and any model/data tensor operations.
+    configure_cpu_threads(config)
     os.makedirs('./logs', exist_ok=True)
     swanlab.sync_wandb()
     wandb.init(
