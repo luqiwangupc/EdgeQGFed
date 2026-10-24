@@ -23,6 +23,7 @@ from utils.warmup import get_warm_up_value
 from utils.e1_logging import E1RunLogger
 from utils.e1_random import e1_random_stream
 from datasets.parallel_clients import initialize_cpu_worker
+from utils.communication import communication_unit_bytes, strict_budget_enabled
 import swanlab
 
 
@@ -142,6 +143,10 @@ def tensor_megabytes(tensor):
 
 
 def client_payload_megabytes(batch, encoded_views, config):
+    if strict_budget_enabled(config):
+        # E4 matched tensor envelope, decimal MB. Excludes protocol/header/retry bytes.
+        tensors = list(encoded_views) + [batch['label'], batch['is_labeled']]
+        return sum(t.numel() * t.element_size() for t in tensors) / 1_000_000
     if OmegaConf.select(config, 'network.client_feature_dim') is not None:
         return sum(tensor_megabytes(view) for view in encoded_views)
     return (
@@ -151,18 +156,20 @@ def client_payload_megabytes(batch, encoded_views, config):
     )
 
 
-def parameter_list_megabytes(parameters):
-    return sum(param.numel() * param.element_size() for param in parameters) / (1024 ** 2)
+def parameter_list_megabytes(parameters, config=None):
+    return sum(param.numel() * param.element_size() for param in parameters) / communication_unit_bytes(config)
 
 
-def edge_summary_megabytes(summary):
+def edge_summary_megabytes(summary, config=None):
     total_bytes = 0
     for param in summary['parameters']:
         total_bytes += param.numel() * param.element_size()
     total_bytes += summary['prototype'].numel() * summary['prototype'].element_size()
     total_bytes += summary['prototype_counts'].numel() * summary['prototype_counts'].element_size()
     total_bytes += 3 * 4
-    return total_bytes / (1024 ** 2)
+    if strict_budget_enabled(config):
+        total_bytes += 8  # int64 N
+    return total_bytes / communication_unit_bytes(config)
 
 
 def network_latency_seconds(payload_mb, bandwidth_mbps, parallel_factor=1):
@@ -542,6 +549,12 @@ def edge_run_loop(
     active_client_ids_by_edge = {}
     selected_client_count_by_edge = {}
     dropped_client_count_by_edge = {}
+    explicit_losses = OmegaConf.select(config, 'train.losses') is not None
+    supervised_enabled = bool(OmegaConf.select(config, 'train.losses.supervised', default=True))
+    consistency_enabled = bool(OmegaConf.select(config, 'train.losses.consistency', default=True))
+    pseudo_enabled = bool(config.train.pseudo.use) and bool(
+        OmegaConf.select(config, 'train.losses.pseudo', default=True)
+    )
 
     if tree.client_batch_loader is not None:
         tree.prepare_client_batches(sampled_clients, current_steps)
@@ -618,7 +631,7 @@ def edge_run_loop(
         all_client_strong = client_strong_output
 
         edge_classification_output = edge.run_model(encoded_inputs)
-        if all_client_is_labeled.any():
+        if supervised_enabled and all_client_is_labeled.any():
             classification_loss = classification_criterion(
                 edge_classification_output[all_client_is_labeled],
                 all_client_labels[all_client_is_labeled],
@@ -626,20 +639,24 @@ def edge_run_loop(
         else:
             classification_loss = scalar_zero(device)
 
-        edge_consistency_output = edge.run_model(all_client_strong)
-        cloud_consistency_output = cloud_node.run_model(all_client_weak)
-        edge_probs = F.softmax(edge_consistency_output / config.train.pseudo.temperature, dim=1)
-        cloud_probs = F.softmax(cloud_consistency_output / config.train.pseudo.temperature, dim=1)
-
         unlabeled_mask = ~all_client_is_labeled
-        edge_confidence, edge_prediction = edge_probs.max(dim=1)
-        cloud_confidence, cloud_prediction = cloud_probs.max(dim=1)
-        agreement_mask = edge_prediction.eq(cloud_prediction)
-        pseudo_weights = compute_soft_pseudo_weights(edge_confidence, cloud_confidence, agreement_mask, unlabeled_mask, config)
-        effective_mask = pseudo_weights > config.train.pseudo.min_weight
-
         pseudo_start_step = int(OmegaConf.select(config, 'train.pseudo.start_step', default=0))
-        pseudo_active = bool(config.train.pseudo.use) and current_steps >= pseudo_start_step
+        pseudo_active = pseudo_enabled and current_steps >= pseudo_start_step
+        auxiliary_observed = not explicit_losses or consistency_enabled or pseudo_active
+        if auxiliary_observed:
+            edge_consistency_output = edge.run_model(all_client_strong)
+            cloud_consistency_output = cloud_node.run_model(all_client_weak)
+            edge_probs = F.softmax(edge_consistency_output / config.train.pseudo.temperature, dim=1)
+            cloud_probs = F.softmax(cloud_consistency_output / config.train.pseudo.temperature, dim=1)
+            edge_confidence, edge_prediction = edge_probs.max(dim=1)
+            cloud_confidence, cloud_prediction = cloud_probs.max(dim=1)
+            agreement_mask = edge_prediction.eq(cloud_prediction)
+            pseudo_weights = compute_soft_pseudo_weights(edge_confidence, cloud_confidence, agreement_mask, unlabeled_mask, config)
+            effective_mask = pseudo_weights > config.train.pseudo.min_weight
+        else:
+            pseudo_weights = torch.zeros(len(unlabeled_mask), device=device)
+            edge_confidence = cloud_confidence = pseudo_weights
+            agreement_mask = effective_mask = torch.zeros_like(unlabeled_mask)
         if pseudo_active and effective_mask.any():
             pseudo_loss = compute_weighted_cross_entropy(
                 edge_consistency_output[effective_mask],
@@ -649,9 +666,9 @@ def edge_run_loop(
         else:
             pseudo_loss = scalar_zero(device)
 
-        consistency_mask = unlabeled_mask
+        consistency_mask = unlabeled_mask if consistency_enabled else torch.zeros_like(unlabeled_mask)
         if bool(OmegaConf.select(config, 'train.consistency_confidence_gate', default=False)):
-            consistency_mask = effective_mask
+            consistency_mask = effective_mask if consistency_enabled else consistency_mask
         if consistency_mask.any():
             consistency_loss = compute_consistency_loss(
                 consistency_criterion,
@@ -665,7 +682,8 @@ def edge_run_loop(
         loss = classification_loss + consistency_weight * consistency_loss
         if pseudo_active:
             loss = loss + config.train.pseudo.weight * pseudo_loss
-        edge.optimizer_step(loss)
+        if loss.requires_grad:
+            edge.optimizer_step(loss)
 
         unlabeled_count = max(int(unlabeled_mask.sum().item()), 1)
         pseudo_ratio = effective_mask[unlabeled_mask].float().mean().item() if unlabeled_mask.any() else 0.0
@@ -706,9 +724,10 @@ def edge_run_loop(
                 'labeled_ratio': labeled_ratio,
                 'mean_confidence': mean_confidence,
                 'batch_size': int(encoded_inputs.size(0)),
+                'quality_observed': auxiliary_observed,
             }
             edge_summaries.append(summary)
-            edge_uplink_mb_by_edge[edge.name] = edge_summary_megabytes(summary)
+            edge_uplink_mb_by_edge[edge.name] = edge_summary_megabytes(summary, config)
 
     active_edges = max(len(class_loss), 1)
     metrics['total_loss'] = total_loss / active_edges
@@ -745,6 +764,8 @@ def edge_run_loop(
     }
     if tree.client_batch_loader is not None:
         network_state['client_batch_plan'] = tree.client_batch_loader.batch_plan
+    if strict_budget_enabled(config):
+        network_state['selection'] = tree.selection_state
     return edge_summaries if update else None, metrics, network_state
 
 
@@ -754,11 +775,22 @@ def train(config):
 
 
 def _train(config, resources):
+    if str(config.datasets.name).lower() == 'harbox':
+        train_users = OmegaConf.select(config, 'datasets.harbox_train_users')
+        if train_users is not None:
+            if int(train_users) < 1:
+                raise ValueError('datasets.harbox_train_users must be positive')
+            os.environ['HARBOX_TRAIN_USERS'] = str(int(train_users))
     configure_cpu_threads(config)
     seed = int(OmegaConf.select(config, 'datasets.seed', default=0))
     set_random_seed(seed)
     paired_inputs = bool(OmegaConf.select(config, 'experiment.paired_inputs', default=False))
     client_workers = OmegaConf.select(config, 'datasets.client_batch_workers')
+    if strict_budget_enabled(config):
+        if client_workers is None or not paired_inputs:
+            raise ValueError('Strict E4 requires client_batch_workers and paired_inputs')
+        if int(config.network.client_view_count) != 3 or int(config.network.bytes_per_value) != 4:
+            raise ValueError('Strict E4 requires three float32 encoded views')
     if paired_inputs and client_workers is None and int(config.datasets.edge_num_workers) != 0:
         raise ValueError('Legacy paired_inputs requires edge_num_workers=0; use --client-workers for parallel client batches')
     if client_workers is not None and int(client_workers) < 0:
@@ -884,7 +916,8 @@ def _train(config, resources):
         sync_this_round = current_steps % config.train.ema_update_step == 0
         include_sync_in_budget = bool(OmegaConf.select(config, 'network.budget.include_model_sync', default=True))
         with e1_random_stream(seed, 'selection', current_steps) if paired_inputs else nullcontext():
-            sampled_clients = tree.sample_clients(config, include_model_sync=include_sync_in_budget and sync_this_round)
+            sampled_clients = tree.sample_clients(config, include_model_sync=include_sync_in_budget and sync_this_round,
+                                                 step=current_steps)
         with e1_random_stream(seed, 'edge_step', current_steps, device) if paired_inputs else nullcontext():
             edge_summaries, train_metrics, network_state = edge_run_loop(
                 tree=tree,
@@ -906,6 +939,7 @@ def _train(config, resources):
         edge_upload_mb = sum(network_state['edge_uplink_mb_by_edge'].values())
         cloud_downlink_mb = 0.0
         cloud_downlink_mb_by_edge = {}
+        teacher_downlink_mb = 0.0
         if edge_summaries is not None:
             aggregation_result = graph_aggregator.aggregate(edge_summaries)
             # Capture decay BEFORE AEMA.update_decay(), not the value for the next update.
@@ -917,7 +951,13 @@ def _train(config, resources):
                     personalized_parameters = aggregation_result['personalized_parameters'].get(edge.name)
                     edge_parameters = personalized_parameters if personalized_parameters is not None else global_parameters
                     edge.set_parameters(edge_parameters)
-                    edge_downlink_mb = parameter_list_megabytes(edge_parameters)
+                    edge_downlink_mb = parameter_list_megabytes(edge_parameters, config)
+                    if strict_budget_enabled(config):
+                        # Common model+teacher dispatch envelope for mechanism controls,
+                        # including supervised-only controls; simulated, not physical sockets.
+                        teacher_size = tree._estimate_edge_sync_mb()
+                        teacher_downlink_mb += teacher_size
+                        edge_downlink_mb += teacher_size
                     cloud_downlink_mb_by_edge[edge.name] = edge_downlink_mb
                     cloud_downlink_mb += edge_downlink_mb
                 train_metrics.update(aggregation_result['metrics'])
@@ -986,6 +1026,15 @@ def _train(config, resources):
         cumulative_estimated_latency_s += formal_round_latency_s
         total_comm_mb = client_upload_mb + edge_upload_mb + cloud_downlink_mb
         cumulative_comm_mb += total_comm_mb
+        if strict_budget_enabled(config):
+            budget = float(config.network.round_comm_budget_mb)
+            if total_comm_mb > budget + 1e-9:
+                raise RuntimeError(f'Strict payload exceeds budget: {total_comm_mb} > {budget} MB')
+            if e1_logger is not None:
+                e1_logger.record_communication(current_steps, client_upload_mb, edge_upload_mb,
+                                               cloud_downlink_mb-teacher_downlink_mb,
+                                               teacher_downlink_mb, cumulative_comm_mb, budget,
+                                               tree.selection_state)
         processed_samples = train_metrics['sampled_clients'] * config.datasets.batch_size
         train_metrics.update({
             'client_upload_mb': client_upload_mb,

@@ -15,6 +15,7 @@ from datasets.parallel_clients import MODEL_BATCH_KEYS, ParallelClientBatchLoade
 from datasets.SemiDatasets import _build_augmentations, build_base_transform
 from tree.tree import Tree, TreeNode
 from utils.e1_random import e1_random_stream
+from utils.communication import communication_unit_bytes, strict_budget_enabled
 
 
 class RandomView:
@@ -166,7 +167,8 @@ class ParallelClientTests(unittest.TestCase):
                  'edge_summary_megabytes'}
         functions = [node for node in source.body if isinstance(node, ast.FunctionDef) and node.name in names]
         namespace = dict(torch=torch, F=torch.nn.functional, random=random, OmegaConf=OmegaConf,
-                         OrderedDict=OrderedDict, get_n_classes=lambda name: 2)
+                         OrderedDict=OrderedDict, get_n_classes=lambda name: 2,
+                         communication_unit_bytes=communication_unit_bytes, strict_budget_enabled=strict_budget_enabled)
         exec(compile(ast.Module(body=functions, type_ignores=[]), '<edge-loop>', 'exec'), namespace)
         cfg = OmegaConf.create({
             'datasets': {'name': 'harbox'}, 'models': {'attack_rate': 0.},

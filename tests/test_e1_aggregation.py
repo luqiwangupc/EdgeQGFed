@@ -19,6 +19,7 @@ from models.graph_aggregator import HierarchicalGraphAggregator
 from tools.prepare_e1_configs import CORE_VARIANTS, VARIANTS, build_variant, main as prepare_configs
 from utils.e1_logging import E1RunLogger
 from utils.e1_random import e1_random_stream
+from utils.communication import strict_budget_enabled
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -183,7 +184,8 @@ class AggregationTests(unittest.TestCase):
                     'edge_summaries': summaries(), 'graph_aggregator': aggregator,
                     'current_steps': 0, 'train_metrics': {}, 'cloud_downlink_mb_by_edge': {},
                     'cloud_downlink_mb': 0.,
-                    'parameter_list_megabytes': lambda params: sum(p.numel()*p.element_size() for p in params)/1024**2,
+                    'parameter_list_megabytes': lambda params, config=None: sum(p.numel()*p.element_size() for p in params)/1024**2,
+                    'config': config(mode, teacher_mode), 'strict_budget_enabled': strict_budget_enabled,
                     'e1_logger': SimpleNamespace(record_aggregation=lambda *args: events.append(args)),
                 }
                 exec(compile(ast.Module(body=[block], type_ignores=[]), '<dispatch-block>', 'exec'), namespace)

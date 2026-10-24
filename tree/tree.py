@@ -13,11 +13,13 @@ from datasets.SemiDatasets import (
     build_client_registries,
     build_reusable_edge_batch_dataset,
     make_train_val_indices,
+    get_n_classes,
 )
 from models.GetModel import get_model
 from models.classifier import ENCODER_FEATURE_DIMS
 from datasets.parallel_clients import ParallelClientBatchLoader
 from utils.e1_random import e1_random_stream
+from utils.communication import communication_unit_bytes, strict_budget_enabled, summary_metadata_bytes
 
 
 def resolve_aggregation_mode(config):
@@ -111,6 +113,7 @@ class Tree:
         self.config = None
         self.client_batch_loader = None
         self.active_round_clients = {}
+        self.selection_state = {}
 
     def find_node(self, name, node=None):
         if node is None:
@@ -345,6 +348,13 @@ class Tree:
         """Freeze successful clients, then prefetch client tasks before ES GPU work."""
         seed = int(OmegaConf.select(self.config, 'datasets.seed', default=0))
         active = {}
+        if strict_budget_enabled(self.config):
+            # E4 selectors already excluded unavailable clients, using the same keyed
+            # opportunity draws for every method. No second drop/packet-loss draw.
+            self.active_round_clients = {edge.name: list(sampled_clients.get(edge.name, []))
+                                         for edge in self.root.children}
+            self.client_batch_loader.prepare(self.active_round_clients, step)
+            return
         for edge in self.root.children:
             active[edge.name] = []
             for client_id in sampled_clients.get(edge.name, []):
@@ -371,7 +381,9 @@ class Tree:
             channels = int(self.config.network.client_input_channels)
             img_size = int(self.config.network.client_image_size)
             total_bytes = batch_size * channels * img_size * img_size * bytes_per_value * views
-        return total_bytes / (1024 ** 2)
+        if strict_budget_enabled(self.config):
+            total_bytes += batch_size * (8 + 1)  # int64 labels and bool label mask
+        return total_bytes / communication_unit_bytes(self.config)
 
     def _estimate_edge_sync_mb(self):
         for edge in self.root.children:
@@ -380,7 +392,7 @@ class Tree:
                     tensor.numel() * tensor.element_size()
                     for tensor in aggregation_tensors(edge.model, edge.aggregation_mode)
                 )
-                return total_bytes / (1024 ** 2)
+                return total_bytes / communication_unit_bytes(self.config)
         return 0.0
 
     def get_client_uplink_bandwidth(self, client_id):
@@ -419,12 +431,24 @@ class Tree:
 
     def _estimated_round_comm_mb(self, sampled, config, include_model_sync=None):
         selected_edges = self._selected_edges(sampled)
+        if strict_budget_enabled(config) and not selected_edges:
+            return 0.0
         client_upload_mb = sum(len(client_ids) for client_ids in sampled.values()) * self._estimate_client_upload_mb()
         if include_model_sync is None:
             include_model_sync = bool(OmegaConf.select(config, 'network.budget.include_model_sync', default=True))
         if not include_model_sync:
             return client_upload_mb
         sync_mb = self._estimate_edge_sync_mb()
+        if strict_budget_enabled(config):
+            feature_dim = ENCODER_FEATURE_DIMS.get(str(config.models.encoder_name),
+                                                 OmegaConf.select(config, 'network.client_feature_dim'))
+            if feature_dim is None:
+                raise ValueError('Strict E4 requires an explicit feature dimension')
+            metadata_mb = summary_metadata_bytes(get_n_classes(config.datasets.name), feature_dim) / 1_000_000
+            # Matched envelope: summary for active ESs; model AND teacher for every ES,
+            # including inactive fallback. Common to all E4 loss/aggregation controls.
+            return (client_upload_mb + len(selected_edges) * (sync_mb + metadata_mb)
+                    + 2 * len(self.root.children) * sync_mb)
         edge_upload_mb = len(selected_edges) * sync_mb
         cloud_downlink_mb = len(selected_edges) * sync_mb
         return client_upload_mb + edge_upload_mb + cloud_downlink_mb
@@ -509,7 +533,87 @@ class Tree:
             sampled[edge_name].append(client_id)
         return self._apply_network_constraints(sampled, config, include_model_sync=include_model_sync)
 
-    def sample_clients(self, config, include_model_sync=None):
+    def _sample_clients_feasible(self, config, include_model_sync, step):
+        mode = str(config.topology.client_sample_mode).lower()
+        if mode not in {'random_budget', 'resource_aware'}:
+            raise ValueError('Strict E4 selector must be random_budget or resource_aware')
+        budget = float(config.network.round_comm_budget_mb)
+        if not math.isfinite(budget) or budget < 0:
+            raise ValueError('Strict round budget must be finite and nonnegative (decimal MB)')
+        seed = int(OmegaConf.select(config, 'datasets.seed', default=0))
+        available, eligible = [], []
+        for client_id, entry in self.client_registry.items():
+            with e1_random_stream(seed, f'client_availability:{client_id}', step):
+                available_now = random.random() >= self.get_client_drop_probability(client_id, config)
+            if available_now:
+                available.append(client_id)
+                if entry['num_samples'] > 0:
+                    eligible.append(client_id)
+        limits = (int(config.topology.clients_per_round), int(config.topology.edges_per_round),
+                  int(config.network.max_parallel_uploads_per_edge))
+        if min(limits) < 0 or limits[2] == 0:
+            raise ValueError('Strict quotas must be nonnegative; per-edge cap must be positive')
+        candidates = list(eligible)
+        if mode == 'random_budget':
+            # Random admission; never prune using the RS utility.
+            random.shuffle(candidates)
+        else:
+            scores = {}
+            exploration = float(OmegaConf.select(config, 'network.resource_sampling.exploration_rate', default=.05))
+            for client_id in candidates:
+                score = self._client_utility(client_id, config)
+                if random.random() < exploration:
+                    score *= random.uniform(.5, 1.5)
+                scores[client_id] = score
+            # Same regional RS policy as before, now restricted to available clients.
+            by_edge = {}
+            for client_id in candidates:
+                by_edge.setdefault(self.client_registry[client_id]['edge_name'], []).append(client_id)
+            ranked_edges = sorted(by_edge, key=lambda edge: sum(self._client_utility(c, config)
+                                   for c in by_edge[edge]) / len(by_edge[edge]), reverse=True)
+            allowed_edges = set(ranked_edges[:limits[1]])
+            candidates = [c for c in candidates if self.client_registry[c]['edge_name'] in allowed_edges]
+            candidates.sort(key=lambda c: scores[c], reverse=True)
+        sampled = {}
+        exclusions = {c: ('unavailable' if c not in available else 'empty_client')
+                      for c in self.client_registry if c not in eligible}
+        selected_count = 0
+        for client_id in candidates:
+            edge = self.client_registry[client_id]['edge_name']
+            if selected_count >= limits[0]:
+                exclusions[client_id] = 'round_quota'
+                continue
+            if edge not in sampled and len(sampled) >= limits[1]:
+                exclusions[client_id] = 'edge_quota'
+                continue
+            if len(sampled.get(edge, [])) >= limits[2]:
+                exclusions[client_id] = 'per_edge_quota'
+                continue
+            trial = {name: list(ids) for name, ids in sampled.items()}
+            trial.setdefault(edge, []).append(client_id)
+            if self._estimated_round_comm_mb(trial, config, include_model_sync) > budget + 1e-9:
+                exclusions[client_id] = 'budget'
+                continue
+            sampled = trial
+            selected_count += 1
+        for client_id in eligible:
+            if client_id not in candidates:
+                exclusions[client_id] = 'rs_edge_rank'
+        # Consume client tasks in canonical ES order, independent of rank order.
+        sampled = {edge.name: sampled[edge.name] for edge in self.root.children if edge.name in sampled}
+        reserved = self._estimated_round_comm_mb(sampled, config, include_model_sync)
+        self.selection_state = {
+            'protocol': 'available_feasible_v1', 'step': int(step), 'selector': mode,
+            'available': available, 'eligible': eligible, 'exclusion_reason': exclusions,
+            'reserved_payload_bytes': round(reserved * 1_000_000),
+            'budget_bytes': round(budget * 1_000_000),
+            'status': ('selected' if sampled else 'no_eligible' if not eligible else 'no_feasible_selection'),
+        }
+        return sampled
+
+    def sample_clients(self, config, include_model_sync=None, step=0):
+        if strict_budget_enabled(config):
+            return self._sample_clients_feasible(config, include_model_sync, step)
         total_clients = min(config.topology.clients_per_round, len(self.client_registry))
         edge_names = list(self.edge_to_clients.keys())
         if not edge_names or total_clients == 0:
