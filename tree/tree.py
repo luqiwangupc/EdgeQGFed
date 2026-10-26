@@ -20,6 +20,7 @@ from models.classifier import ENCODER_FEATURE_DIMS
 from datasets.parallel_clients import ParallelClientBatchLoader
 from utils.e1_random import e1_random_stream
 from utils.communication import communication_unit_bytes, strict_budget_enabled, summary_metadata_bytes
+from utils.e3_stress import apply_label_stress
 
 
 def resolve_aggregation_mode(config):
@@ -114,6 +115,7 @@ class Tree:
         self.client_batch_loader = None
         self.active_round_clients = {}
         self.selection_state = {}
+        self.stress_manifest = None
 
     def find_node(self, name, node=None):
         if node is None:
@@ -193,6 +195,7 @@ class Tree:
             entry['edge_name'] = edge_name
             self.client_registry[client_id] = entry
             self.edge_to_clients[edge_name].append(client_id)
+        self.stress_manifest = apply_label_stress(self.client_registry, config, get_n_classes(config.datasets.name))
         self.init_network_profiles(config)
         self.init_edge_batch_loaders(config)
         print(f"Registered {len(self.client_registry)} clients across {len(self.edge_to_clients)} edges".center(80, '*'))

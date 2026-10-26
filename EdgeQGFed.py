@@ -24,6 +24,7 @@ from utils.e1_logging import E1RunLogger
 from utils.e1_random import e1_random_stream
 from datasets.parallel_clients import initialize_cpu_worker
 from utils.communication import communication_unit_bytes, strict_budget_enabled
+from utils.e3_stress import ValidationMixProbe, validate_stress_config
 import swanlab
 
 
@@ -797,6 +798,7 @@ def _train(config, resources):
         raise ValueError('datasets.client_batch_workers must be >= 0')
     # Validate modes before constructing encoders/datasets (which may otherwise download).
     graph_aggregator = HierarchicalGraphAggregator(config)
+    stress_enabled = validate_stress_config(config)
     e1_logger = E1RunLogger(config, graph_aggregator) if bool(
         OmegaConf.select(config, 'experiment.e1_logging', default=False)
     ) else None
@@ -875,6 +877,12 @@ def _train(config, resources):
     classification_criterion = classification_criterion.to(device)
     consistency_criterion = consistency_criterion.to(device)
 
+    stress_probe = ValidationMixProbe(config, valset, encoder_model, device) if stress_enabled else None
+    if stress_probe is not None:
+        import json
+        (e1_logger.directory / 'stress_probe_manifest.json').write_text(
+            json.dumps(stress_probe.manifest, indent=2), encoding='utf-8')
+
     current_steps = 0
     best_metrics = {'cloud_accuracy': 0.0}
     round_start_wall = time.perf_counter()
@@ -940,6 +948,9 @@ def _train(config, resources):
         cloud_downlink_mb = 0.0
         cloud_downlink_mb_by_edge = {}
         teacher_downlink_mb = 0.0
+        stress_before = None
+        if stress_probe is not None and edge_summaries and stress_probe.due(current_steps):
+            stress_before = stress_probe.evaluate(tree)
         if edge_summaries is not None:
             aggregation_result = graph_aggregator.aggregate(edge_summaries)
             # Capture decay BEFORE AEMA.update_decay(), not the value for the next update.
@@ -968,6 +979,10 @@ def _train(config, resources):
                     list(cloud_downlink_mb_by_edge),
                 )
             train_metrics['ema_decay'] = tree.root.model.decay
+
+        if stress_before is not None:
+            stress_probe.record(e1_logger, current_steps, stress_before,
+                                stress_probe.evaluate(tree), aggregation_result)
 
         client_latency_candidates = []
         for edge_name, payload_mb in network_state['client_upload_mb_by_edge'].items():

@@ -918,6 +918,8 @@ class ReusableEdgeBatchDataset(Dataset):
         img = client_entry['data'][real_index]
         label = int(client_entry['targets'][real_index])
         is_labeled = bool(client_entry['labeled_mask'][local_pos])
+        # E3 opt-in: only training labels change; clean targets remain immutable.
+        label = client_entry.get('training_label_overrides', {}).get(local_pos, label)
         img = _prepare_image(img, client_entry['data_name'])
         if client_entry['transform'] is not None:
             img = client_entry['transform'](img)
