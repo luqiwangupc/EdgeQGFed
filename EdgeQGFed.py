@@ -495,7 +495,7 @@ def evaluate_and_log(
     if first_target_time is not None:
         print(f"Time to Target Accuracy (s): {first_target_time:.3f}")
         print(f"Wall Time to Target Accuracy (s): {first_target_wall_time:.3f}")
-    wandb.log(build_eval_log_metrics(val_metrics, edge_val_metrics, info_metrics, config), step=current_steps)
+    swanlab.log(build_eval_log_metrics(val_metrics, edge_val_metrics, info_metrics, config), step=current_steps)
 
     best_accuracy = float(best_metrics.get('cloud_accuracy', 0.0))
     if val_metrics['val_accuracy'] > best_accuracy:
@@ -1081,7 +1081,7 @@ def _train(config, resources):
         })
         final_train_metrics = train_metrics
 
-        wandb.log(build_train_log_metrics(train_metrics, config), step=current_steps)
+        swanlab.log(build_train_log_metrics(train_metrics, config), step=current_steps)
 
         if (current_steps + 1) % config.train.log_step == 0:
             print(f"\nStep [{current_steps + 1}/{config.train.total_steps}]")
@@ -1199,12 +1199,22 @@ if __name__ == '__main__':
     # Apply the cap before SDK startup and any model/data tensor operations.
     configure_cpu_threads(config)
     os.makedirs('./logs', exist_ok=True)
-    swanlab.sync_wandb()
-    wandb.init(
-        project='EdgeQGFed',
-        dir='logs',
-        name=f"EdgeQGFed-{config.models.encoder_name}-{config.datasets.name}-{datetime.datetime.now().strftime('%Y%m%d-%H%M')}",
-        config=OmegaConf.to_container(config),
-        job_type='train',
+    swanlab.init(
+        project="EdgeQGFed",
+        experiment_name=(
+            f"EdgeQGFed-{config.models.encoder_name}-"
+            f"{config.datasets.name}-"
+            f"{datetime.datetime.now().strftime('%Y%m%d-%H%M')}"
+        ),
+        config=OmegaConf.to_container(config, resolve=True),
     )
+    # swanlab.finish()
+    # swanlab.sync_wandb()
+    # wandb.init(
+    #     project='EdgeQGFed',
+    #     dir='logs',
+    #     name=f"EdgeQGFed-{config.models.encoder_name}-{config.datasets.name}-{datetime.datetime.now().strftime('%Y%m%d-%H%M')}",
+    #     config=OmegaConf.to_container(config),
+    #     job_type='train',
+    # )
     train(config)
